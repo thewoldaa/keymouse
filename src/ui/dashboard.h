@@ -38,6 +38,9 @@ struct DashboardContext {
     // Live status, refreshed by the dashboard each frame.
     bool hook_running = false;
     bool elevated = false;
+    bool mouse_mode = false;
+    int64_t auto_click_remaining_ms = -1;
+    uint64_t auto_click_fires = 0;
     std::string foreground_exe;
     EngineStats stats;
     uint32_t active_mask = 0;
@@ -49,7 +52,9 @@ struct DashboardContext {
 // Each tab renders into the current ImGui window.
 void draw_status_tab(DashboardContext& context);
 void draw_bindings_tab(DashboardContext& context);
+void draw_mouse_mode_tab(DashboardContext& context);
 void draw_movement_tab(DashboardContext& context);
+void draw_auto_click_tab(DashboardContext& context);
 void draw_profiles_tab(DashboardContext& context);
 void draw_general_tab(DashboardContext& context);
 void draw_diagnostics_tab(DashboardContext& context);
@@ -77,6 +82,14 @@ const char* action_label(I18n& i18n, Action action);
 
 // Localised name of a bind mode ("Hold" / "Toggle" / "Tap").
 const char* bind_mode_label(I18n& i18n, BindMode mode);
+
+// Text input bound to a std::string. ImGui's stock InputText only writes into
+// a fixed buffer; this uses the resize callback so the string can grow.
+bool input_text(const char* label, std::string& value, ImGuiInputTextFlags flags = 0);
+
+// Formats a duration in milliseconds as "12:34" or "1:02:03" for the
+// auto-click countdown. Returns "-" for a negative value.
+void format_duration(int64_t milliseconds, char* out, size_t out_size);
 
 // True while Action(i) is set in an engine active-action mask.
 bool mask_has(uint32_t mask, Action action);

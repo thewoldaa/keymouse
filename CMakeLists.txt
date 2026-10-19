@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(KeyMouse
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Control the mouse entirely from the keyboard"
     HOMEPAGE_URL "https://github.com/thewoldaa/keymouse"
     LANGUAGES CXX)
@@ -35,6 +35,7 @@ include(cmake/CompilerWarnings.cmake)
 # ---------------------------------------------------------------------------
 add_library(keymouse_core STATIC
     src/core/action.cpp
+    src/core/autoclick.cpp
     src/core/binding.cpp
     src/core/binding_table.cpp
     src/core/chord.cpp
@@ -45,6 +46,7 @@ add_library(keymouse_core STATIC
     src/core/motion.cpp
     src/core/profiles.cpp
     src/core/router.cpp
+    src/core/scheduler.cpp
 )
 
 target_include_directories(keymouse_core PUBLIC src)
@@ -62,7 +64,9 @@ target_compile_definitions(keymouse_core PUBLIC
 add_library(keymouse_win32 STATIC
     src/input/backend_win32.cpp
     src/input/keycodes_win32.cpp
+    src/platform/beep_win32.cpp
     src/platform/dpi_win32.cpp
+    src/platform/file_dialog_win32.cpp
     src/platform/locale_win32.cpp
     src/platform/paths_win32.cpp
     src/platform/screen_win32.cpp
@@ -87,6 +91,7 @@ target_link_libraries(keymouse_win32 PUBLIC
     dwmapi
     wtsapi32
     winmm
+    comdlg32
 )
 keymouse_set_warnings(keymouse_win32)
 
@@ -99,9 +104,11 @@ add_library(keymouse_ui STATIC
     src/ui/theme.cpp
     src/ui/tray.cpp
     src/ui/widgets/chord_capture.cpp
+    src/ui/tabs/tab_auto_click.cpp
     src/ui/tabs/tab_bindings.cpp
     src/ui/tabs/tab_diagnostics.cpp
     src/ui/tabs/tab_general.cpp
+    src/ui/tabs/tab_mouse_mode.cpp
     src/ui/tabs/tab_movement.cpp
     src/ui/tabs/tab_profiles.cpp
     src/ui/tabs/tab_status.cpp

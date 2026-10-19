@@ -2,6 +2,7 @@
 #include "core/config.h"
 
 #include <algorithm>
+#include <set>
 #include <unordered_set>
 
 #include <nlohmann/json.hpp>
@@ -71,15 +72,31 @@ Binding binding_from_json(const json& value) {
     return binding;
 }
 
-json profile_to_json(const Profile& profile) {
-    json bindings = json::array();
-    for (const auto& binding : profile.bindings) {
-        bindings.push_back(binding_to_json(binding));
+json bindings_to_json(const std::vector<Binding>& bindings) {
+    json out = json::array();
+    for (const auto& binding : bindings) {
+        out.push_back(binding_to_json(binding));
     }
+    return out;
+}
+
+std::vector<Binding> bindings_from_json(const json& value) {
+    std::vector<Binding> out;
+    if (value.is_array()) {
+        for (const auto& item : value) {
+            if (item.is_object()) {
+                out.push_back(binding_from_json(item));
+            }
+        }
+    }
+    return out;
+}
+
+json profile_to_json(const Profile& profile) {
     return json{
         {"name", profile.name},
         {"match_exe", profile.match_exe},
-        {"bindings", bindings},
+        {"bindings", bindings_to_json(profile.bindings)},
     };
 }
 
@@ -91,12 +108,8 @@ Profile profile_from_json(const json& value) {
     if (value.contains("match_exe") && value["match_exe"].is_string()) {
         profile.match_exe = value["match_exe"].get<std::string>();
     }
-    if (value.contains("bindings") && value["bindings"].is_array()) {
-        for (const auto& item : value["bindings"]) {
-            if (item.is_object()) {
-                profile.bindings.push_back(binding_from_json(item));
-            }
-        }
+    if (value.contains("bindings")) {
+        profile.bindings = bindings_from_json(value["bindings"]);
     }
     return profile;
 }
@@ -105,9 +118,12 @@ json motion_to_json(const MotionConfig& motion) {
     return json{
         {"speed_px_s", motion.speed_px_s},
         {"accel_ms", motion.accel_ms},
+        {"accel_max", motion.accel_max},
+        {"accel_curve", motion.accel_curve},
         {"precision_mult", motion.precision_mult},
         {"turbo_mult", motion.turbo_mult},
         {"diagonal_normalize", motion.diagonal_normalize},
+        {"method", motion_method_name(motion.method)},
     };
 }
 
@@ -120,12 +136,123 @@ MotionConfig motion_from_json(const json& value) {
     };
     read("speed_px_s", motion.speed_px_s);
     read("accel_ms", motion.accel_ms);
+    read("accel_max", motion.accel_max);
+    read("accel_curve", motion.accel_curve);
     read("precision_mult", motion.precision_mult);
     read("turbo_mult", motion.turbo_mult);
     if (value.contains("diagonal_normalize") && value["diagonal_normalize"].is_boolean()) {
         motion.diagonal_normalize = value["diagonal_normalize"].get<bool>();
     }
+    if (value.contains("method") && value["method"].is_string()) {
+        motion.method = motion_method_from_name(value["method"].get<std::string>());
+    }
     return motion;
+}
+
+json mouse_mode_to_json(const MouseModeConfig& mouse_mode) {
+    return json{
+        {"start_enabled", mouse_mode.start_enabled},
+        {"hold_to_activate", mouse_mode.hold_to_activate},
+        {"beep", mouse_mode.beep},
+        {"toggle_key", chord_to_json(mouse_mode.toggle_key)},
+        {"bindings", bindings_to_json(mouse_mode.bindings)},
+    };
+}
+
+MouseModeConfig mouse_mode_from_json(const json& value) {
+    MouseModeConfig out;
+    auto read_bool = [&value](const char* key, bool& target) {
+        if (value.contains(key) && value[key].is_boolean()) {
+            target = value[key].get<bool>();
+        }
+    };
+    read_bool("start_enabled", out.start_enabled);
+    read_bool("hold_to_activate", out.hold_to_activate);
+    read_bool("beep", out.beep);
+    if (value.contains("toggle_key") && value["toggle_key"].is_object()) {
+        out.toggle_key = chord_from_json(value["toggle_key"]);
+    }
+    if (value.contains("bindings")) {
+        out.bindings = bindings_from_json(value["bindings"]);
+    }
+    return out;
+}
+
+json auto_click_task_to_json(const AutoClickTask& task) {
+    return json{
+        {"id", task.id},
+        {"name", task.name},
+        {"enabled", task.enabled},
+        {"action", std::string(auto_click_action_name(task.action))},
+        {"interval_seconds", task.interval_seconds},
+        {"start_delay_seconds", task.start_delay_seconds},
+        {"repeat_count", task.repeat_count},
+        {"run_missed_once", task.run_missed_once},
+        {"only_if_app", task.only_if_app},
+    };
+}
+
+AutoClickTask auto_click_task_from_json(const json& value) {
+    AutoClickTask task;
+    auto read_string = [&value](const char* key, std::string& out) {
+        if (value.contains(key) && value[key].is_string()) {
+            out = value[key].get<std::string>();
+        }
+    };
+    auto read_bool = [&value](const char* key, bool& out) {
+        if (value.contains(key) && value[key].is_boolean()) {
+            out = value[key].get<bool>();
+        }
+    };
+    auto read_number = [&value](const char* key, double& out) {
+        if (value.contains(key) && value[key].is_number()) {
+            out = value[key].get<double>();
+        }
+    };
+    read_string("id", task.id);
+    read_string("name", task.name);
+    read_bool("enabled", task.enabled);
+    read_bool("run_missed_once", task.run_missed_once);
+    read_string("only_if_app", task.only_if_app);
+    read_number("interval_seconds", task.interval_seconds);
+    read_number("start_delay_seconds", task.start_delay_seconds);
+    if (value.contains("repeat_count") && value["repeat_count"].is_number_integer()) {
+        task.repeat_count = value["repeat_count"].get<int>();
+    }
+    if (value.contains("action") && value["action"].is_string()) {
+        task.action = auto_click_action_from_name(value["action"].get<std::string>());
+    }
+    return task;
+}
+
+json auto_click_to_json(const AutoClickConfig& auto_click) {
+    json tasks = json::array();
+    for (const auto& task : auto_click.tasks) {
+        tasks.push_back(auto_click_task_to_json(task));
+    }
+    return json{
+        {"enabled", auto_click.enabled},
+        {"toggle_key", chord_to_json(auto_click.toggle_key)},
+        {"tasks", tasks},
+    };
+}
+
+AutoClickConfig auto_click_from_json(const json& value) {
+    AutoClickConfig out;
+    if (value.contains("enabled") && value["enabled"].is_boolean()) {
+        out.enabled = value["enabled"].get<bool>();
+    }
+    if (value.contains("toggle_key") && value["toggle_key"].is_object()) {
+        out.toggle_key = chord_from_json(value["toggle_key"]);
+    }
+    if (value.contains("tasks") && value["tasks"].is_array()) {
+        for (const auto& item : value["tasks"]) {
+            if (item.is_object()) {
+                out.tasks.push_back(auto_click_task_from_json(item));
+            }
+        }
+    }
+    return out;
 }
 
 Binding make_binding(Action action, ModMask mods, KeyId key,
@@ -137,6 +264,18 @@ Binding make_binding(Action action, ModMask mods, KeyId key,
     binding.mode = mode;
     binding.swallow = swallow;
     return binding;
+}
+
+bool is_movement(Action action) {
+    return action == Action::MoveUp || action == Action::MoveDown ||
+           action == Action::MoveLeft || action == Action::MoveRight;
+}
+
+// Adds the mouse-mode table to a preset. The plain keys are the point: the
+// user turns the mode on and every mouse action is a single press under one
+// hand, with no modifiers to hold.
+void add_mouse_mode_defaults(AppConfig& config) {
+    config.mouse_mode.bindings = make_mouse_mode_bindings();
 }
 
 }  // namespace
@@ -174,7 +313,34 @@ bool AppConfig::chord_in_use(const Chord& chord, const std::string& ignore_profi
             }
         }
     }
+    for (const auto& binding : mouse_mode.bindings) {
+        if (binding.chord == chord) {
+            return true;
+        }
+    }
     return false;
+}
+
+bool AppConfig::chord_is_reserved(const Chord& chord) const {
+    return chord == panic_key || chord == mouse_mode.toggle_key ||
+           chord == auto_click.toggle_key;
+}
+
+std::vector<Binding> make_mouse_mode_bindings() {
+    return {
+        make_binding(Action::MoveUp, ModNone, key::KeyI),
+        make_binding(Action::MoveDown, ModNone, key::KeyK),
+        make_binding(Action::MoveLeft, ModNone, key::KeyJ),
+        make_binding(Action::MoveRight, ModNone, key::KeyL),
+        make_binding(Action::ClickLeft, ModNone, key::KeyU, BindMode::Tap),
+        make_binding(Action::ClickRight, ModNone, key::KeyO, BindMode::Tap),
+        make_binding(Action::ClickMiddle, ModNone, key::KeyP, BindMode::Tap),
+        make_binding(Action::ScrollUp, ModNone, key::KeyY),
+        make_binding(Action::ScrollDown, ModNone, key::KeyH),
+        make_binding(Action::Precision, ModNone, key::KeyF),
+        make_binding(Action::Turbo, ModNone, key::KeyG),
+        make_binding(Action::DragLock, ModNone, key::Space, BindMode::Toggle),
+    };
 }
 
 AppConfig make_default_config() {
@@ -234,18 +400,19 @@ AppConfig make_preset(Preset preset) {
                 make_binding(Action::Precision, ModCtrl | ModAlt | ModShift, key::NumpadEnter),
             };
             config.motion.speed_px_s = 900.0;
-            config.motion.accel_ms = 60.0;
+            config.motion.accel_ms = 300.0;
             break;
     }
 
     config.profiles.push_back(std::move(profile));
+    add_mouse_mode_defaults(config);
     return config;
 }
 
 std::string to_json(const AppConfig& config) {
-    json bindings_by_profile = json::array();
+    json profiles = json::array();
     for (const auto& profile : config.profiles) {
-        bindings_by_profile.push_back(profile_to_json(profile));
+        profiles.push_back(profile_to_json(profile));
     }
 
     const json root{
@@ -259,11 +426,70 @@ std::string to_json(const AppConfig& config) {
         {"fn_layer_key", std::string(key_name(config.fn_layer_key))},
         {"motion", motion_to_json(config.motion)},
         {"scroll_lines_per_second", config.scroll_lines_per_second},
+        {"mouse_mode", mouse_mode_to_json(config.mouse_mode)},
+        {"auto_click", auto_click_to_json(config.auto_click)},
         {"active_profile", config.active_profile},
         {"auto_switch_profiles", config.auto_switch_profiles},
-        {"profiles", bindings_by_profile},
+        {"profiles", profiles},
     };
     return root.dump(2);
+}
+
+std::string profiles_to_json(const std::vector<Profile>& profiles) {
+    json items = json::array();
+    for (const auto& profile : profiles) {
+        items.push_back(profile_to_json(profile));
+    }
+    const json root{
+        {"format", "keymouse-profiles"},
+        {"version", 1},
+        {"profiles", items},
+    };
+    return root.dump(2);
+}
+
+std::optional<std::vector<Profile>> profiles_from_json(std::string_view text,
+                                                       std::string& error) {
+    json root;
+    try {
+        root = json::parse(text.begin(), text.end());
+    } catch (const std::exception& ex) {
+        error = std::string("JSON parse error: ") + ex.what();
+        return std::nullopt;
+    }
+
+    if (!root.is_object() || !root.contains("format") ||
+        root["format"] != "keymouse-profiles") {
+        error = "This is not a KeyMouse profile file";
+        return std::nullopt;
+    }
+    if (!root.contains("profiles") || !root["profiles"].is_array()) {
+        error = "The profile file has no profiles array";
+        return std::nullopt;
+    }
+
+    std::vector<Profile> profiles;
+    for (const auto& item : root["profiles"]) {
+        if (!item.is_object()) {
+            error = "A profile entry is not an object";
+            return std::nullopt;
+        }
+        Profile profile = profile_from_json(item);
+        profile.bindings.erase(
+            std::remove_if(profile.bindings.begin(), profile.bindings.end(),
+                [](const Binding& binding) { return !binding.valid(); }),
+            profile.bindings.end());
+        if (profile.bindings.empty()) {
+            error = "Profile '" + profile.name + "' has no valid bindings";
+            return std::nullopt;
+        }
+        profiles.push_back(std::move(profile));
+    }
+    if (profiles.empty()) {
+        error = "The profile file contains no profiles";
+        return std::nullopt;
+    }
+    return profiles;
 }
 
 std::optional<AppConfig> from_json(std::string_view text, std::string& error) {
@@ -290,6 +516,7 @@ std::optional<AppConfig> from_json(std::string_view text, std::string& error) {
                 std::to_string(kConfigSchemaVersion) + ")";
         return std::nullopt;
     }
+    const int loaded_schema = config.schema;
 
     auto read_string = [&root](const char* key, std::string& out) {
         if (root.contains(key) && root[key].is_string()) {
@@ -322,10 +549,32 @@ std::optional<AppConfig> from_json(std::string_view text, std::string& error) {
 
     if (root.contains("motion") && root["motion"].is_object()) {
         config.motion = motion_from_json(root["motion"]);
+
+        // Schema 1 had a single exponential "time to reach speed" and no
+        // maximum multiplier. Folding those configs into a constant speed keeps
+        // the feel they were tuned for; new installs get the ramp.
+        const bool has_accel_max = root["motion"].contains("accel_max");
+        if (!has_accel_max && loaded_schema < 2) {
+            config.motion.accel_max = 1.0;
+            config.motion.accel_curve = 1.0;
+        }
     }
 
     if (root.contains("scroll_lines_per_second") && root["scroll_lines_per_second"].is_number()) {
         config.scroll_lines_per_second = root["scroll_lines_per_second"].get<double>();
+    }
+
+    if (root.contains("mouse_mode") && root["mouse_mode"].is_object()) {
+        config.mouse_mode = mouse_mode_from_json(root["mouse_mode"]);
+        if (config.mouse_mode.bindings.empty() && loaded_schema < 2) {
+            // A schema 1 file has no mouse mode at all. Seed the default table
+            // so the feature is usable right after upgrading.
+            config.mouse_mode.bindings = make_mouse_mode_bindings();
+        }
+    }
+
+    if (root.contains("auto_click") && root["auto_click"].is_object()) {
+        config.auto_click = auto_click_from_json(root["auto_click"]);
     }
 
     if (root.contains("active_profile") && root["active_profile"].is_number_unsigned()) {
@@ -364,6 +613,10 @@ void sanitize(AppConfig& config) {
         MotionConfig::kMinSpeed, MotionConfig::kMaxSpeed);
     config.motion.accel_ms = std::clamp(config.motion.accel_ms,
         MotionConfig::kMinAccel, MotionConfig::kMaxAccel);
+    config.motion.accel_max = std::clamp(config.motion.accel_max,
+        MotionConfig::kMinAccelMax, MotionConfig::kMaxAccelMax);
+    config.motion.accel_curve = std::clamp(config.motion.accel_curve,
+        MotionConfig::kMinCurve, MotionConfig::kMaxCurve);
     config.motion.precision_mult = std::clamp(config.motion.precision_mult, 0.01, 1.0);
     config.motion.turbo_mult = std::clamp(config.motion.turbo_mult, 1.0, 20.0);
     config.scroll_lines_per_second = std::clamp(config.scroll_lines_per_second, 1.0, 60.0);
@@ -376,6 +629,36 @@ void sanitize(AppConfig& config) {
     // different meanings for the same physical key.
     if (config.fn_layer_key == key::Invalid || is_modifier_key(config.fn_layer_key)) {
         config.fn_layer_key = key::Menu;
+    }
+
+    if (!config.mouse_mode.toggle_key.valid()) {
+        config.mouse_mode.toggle_key = Chord{ModCtrl | ModAlt, key::KeyM};
+    }
+    if (config.mouse_mode.bindings.empty()) {
+        config.mouse_mode.bindings = make_mouse_mode_bindings();
+    }
+    config.mouse_mode.bindings.erase(
+        std::remove_if(config.mouse_mode.bindings.begin(),
+                       config.mouse_mode.bindings.end(),
+                       [](const Binding& binding) { return !binding.valid(); }),
+        config.mouse_mode.bindings.end());
+
+    if (!config.auto_click.toggle_key.valid()) {
+        config.auto_click.toggle_key = Chord{ModCtrl | ModAlt, key::KeyT};
+    }
+    for (size_t i = 0; i < config.auto_click.tasks.size(); ++i) {
+        AutoClickTask& task = config.auto_click.tasks[i];
+        if (task.id.empty()) {
+            task.id = "task-" + std::to_string(i + 1);
+        }
+        if (task.name.empty()) {
+            task.name = "Task " + std::to_string(i + 1);
+        }
+        task.interval_seconds = std::clamp(task.interval_seconds,
+            kMinAutoClickIntervalSeconds, kMaxAutoClickIntervalSeconds);
+        task.start_delay_seconds = std::clamp(task.start_delay_seconds,
+            0.0, kMaxAutoClickDelaySeconds);
+        task.repeat_count = std::clamp(task.repeat_count, 0, kMaxAutoClickRepeats);
     }
 
     for (auto& profile : config.profiles) {
@@ -405,13 +688,18 @@ std::vector<std::string> validate(const AppConfig& config) {
                 problems.push_back("Profile '" + profile.name + "' binds the panic key " +
                     format_chord(config.panic_key));
             }
+            if (binding.chord == config.mouse_mode.toggle_key) {
+                problems.push_back("Profile '" + profile.name + "' binds the mouse-mode key " +
+                    format_chord(config.mouse_mode.toggle_key));
+            }
+            if (binding.chord == config.auto_click.toggle_key) {
+                problems.push_back("Profile '" + profile.name + "' binds the auto-click key " +
+                    format_chord(config.auto_click.toggle_key));
+            }
         }
 
         const bool has_movement = std::any_of(profile.bindings.begin(), profile.bindings.end(),
-            [](const Binding& binding) {
-                return binding.action == Action::MoveUp || binding.action == Action::MoveDown ||
-                       binding.action == Action::MoveLeft || binding.action == Action::MoveRight;
-            });
+            [](const Binding& binding) { return is_movement(binding.action); });
         if (!has_movement) {
             problems.push_back("Profile '" + profile.name + "' has no movement bindings");
         }
@@ -423,6 +711,61 @@ std::vector<std::string> validate(const AppConfig& config) {
             if (!names.insert(profile.name).second) {
                 problems.push_back("Duplicate profile name: " + profile.name);
             }
+        }
+    }
+
+    // Mouse mode
+    std::unordered_set<uint32_t> mouse_seen;
+    for (const auto& binding : config.mouse_mode.bindings) {
+        const uint32_t key = (static_cast<uint32_t>(binding.chord.mods) << 16) | binding.chord.key;
+        if (!mouse_seen.insert(key).second) {
+            problems.push_back("Mouse mode binds " + format_chord(binding.chord) +
+                " more than once");
+        }
+        if (binding.chord == config.panic_key) {
+            problems.push_back("Mouse mode binds the panic key " +
+                format_chord(config.panic_key));
+        }
+        if (binding.chord == config.mouse_mode.toggle_key) {
+            problems.push_back("Mouse mode binds its own toggle key " +
+                format_chord(config.mouse_mode.toggle_key));
+        }
+        if (binding.chord == config.auto_click.toggle_key) {
+            problems.push_back("Mouse mode binds the auto-click key " +
+                format_chord(config.auto_click.toggle_key));
+        }
+    }
+    const bool mouse_has_movement = std::any_of(
+        config.mouse_mode.bindings.begin(), config.mouse_mode.bindings.end(),
+        [](const Binding& binding) { return is_movement(binding.action); });
+    if (config.mouse_mode.start_enabled && !mouse_has_movement) {
+        problems.push_back("Mouse mode starts enabled but has no movement bindings");
+    }
+
+    // Mode control keys must be distinct, or pressing one would do two things.
+    if (config.mouse_mode.toggle_key == config.auto_click.toggle_key) {
+        problems.push_back("The mouse-mode key and the auto-click key are the same");
+    }
+    if (config.mouse_mode.toggle_key == config.panic_key) {
+        problems.push_back("The mouse-mode key is also the panic key");
+    }
+    if (config.auto_click.toggle_key == config.panic_key) {
+        problems.push_back("The auto-click key is also the panic key");
+    }
+
+    // Auto-click tasks
+    std::unordered_set<std::string> task_ids;
+    std::unordered_set<std::string> task_names;
+    for (const auto& task : config.auto_click.tasks) {
+        if (!task_ids.insert(task.id).second) {
+            problems.push_back("Auto-click task id '" + task.id + "' is used more than once");
+        }
+        if (!task_names.insert(task.name).second) {
+            problems.push_back("Auto-click task name '" + task.name + "' is used more than once");
+        }
+        if (task.interval_seconds < kMinAutoClickIntervalSeconds) {
+            problems.push_back("Auto-click task '" + task.name +
+                "' has an interval below one second");
         }
     }
 

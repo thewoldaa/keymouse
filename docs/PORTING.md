@@ -11,8 +11,10 @@ Everything in `src/core/`:
 - canonical key ids
 - binding table
 - router state machine
-- motion integrator
-- config schema, presets, validation
+- motion integrator (relative and absolute)
+- auto-click task model and deadline scheduler
+- config schema, presets, migration, validation
+- profile exchange (JSON import/export)
 - i18n loader
 - SPSC ring
 - engine
@@ -33,6 +35,12 @@ public:
     virtual void stop() = 0;
     virtual bool running() const = 0;
     virtual void move(int32_t dx, int32_t dy) = 0;
+    // Optional absolute-movement hooks; they default to "unsupported" and the
+    // engine falls back to relative movement.
+    virtual void move_to(int32_t x, int32_t y) {}
+    virtual bool cursor_position(int32_t& x, int32_t& y) { return false; }
+    virtual bool screen_bounds(int32_t& left, int32_t& top, int32_t& right,
+                               int32_t& bottom) { return false; }
     virtual void button(MouseButton button, bool down) = 0;
     virtual void scroll(Axis axis, int32_t delta) = 0;
     virtual uint64_t dropped_events() const = 0;
@@ -51,6 +59,8 @@ Implement it once per platform and link the right one.
 - `screen` — cursor position, monitor geometry, elevation
 - `session` — lock and unlock notifications
 - `dpi` — display scaling
+- `beep` — short audible feedback for mouse mode
+- `file_dialog` — native profile import/export dialogs
 
 ## Linux
 

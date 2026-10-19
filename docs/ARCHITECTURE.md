@@ -54,14 +54,18 @@ Windows 10 before 1803, which is what used to starve this loop.
                        ├─► Fn layer key state            │
                        ├─► capture mode? ────────────────┼─► return 0, never swallow
                        ├─► panic chord? ─────────────────┼─► toggle enabled, return 1
-                       ├─► BindingTable::find()          │   (lock-free read)
-                       │        │                       │
+                       ├─► mouse-mode toggle? ───────────┼─► flip mode, release, return 1
+                       ├─► auto-click toggle? ───────────┼─► flip master switch, return 1
+                       ├─► active table:                  │   (lock-free read)
+                       │   mouse mode ? plain keys       │
+                       │              : profile chords   │
                        │        └─► swallow? ────────────┼─► return 1
                        │                                │
                        └─► SpscRing<QueuedEvent> ──────►│ pump()
                                                         ├─► Router state machine
                                                         ├─► Motion::step(dt)
-                                                        └─► SendInput()
+                                                        ├─► AutoClickScheduler::poll(now)
+                                                        └─► SendInput() / SetCursorPos()
 ```
 
 The hook callback may not allocate, lock, or perform I/O. Everything expensive
@@ -83,25 +87,28 @@ keyboards.
 src/
 ├── core/           platform independent, no <windows.h>
 │   ├── action      Action enum and stable serialized names
+│   ├── autoclick   Auto-click task model, actions, limits
 │   ├── binding     Binding model: chord + mode + swallow
 │   ├── binding_table  Flat immutable lookup table for the hook thread
 │   ├── chord       Chord type, parse, format, modifier bits
 │   ├── config      JSON schema, presets, sanitize, validate
-│   ├── engine      Ties backend, router, and motion together
+│   ├── engine      Ties backend, router, motion, and scheduler together
 │   ├── i18n        Locale loading with English fallback
 │   ├── keycodes    Canonical layout-independent key ids
-│   ├── motion      Deterministic cursor integrator
-│   ├── profiles    Foreground matching, preset application
+│   ├── motion      Deterministic cursor integrator, relative/absolute
+│   ├── profiles    Foreground matching, preset application, JSON exchange
 │   ├── router      Hold/toggle/tap state machine
+│   ├── scheduler   Monotonic-deadline auto-click scheduler
 │   ├── spsc_ring   Lock-free queue
 │   └── version     Version string, filled in by CMake
 ├── input/          platform input backend
 │   ├── input_backend.h   the seam
-│   ├── backend_win32     WH_KEYBOARD_LL + SendInput
+│   ├── backend_win32     WH_KEYBOARD_LL + SendInput/SetCursorPos
 │   └── keycodes_win32    scancode ↔ canonical id
 ├── platform/       OS services behind narrow interfaces
-│   ├── dpi, locale, paths, screen, session, startup, timer
-├── ui/             Dear ImGui dashboard
+│   ├── beep, dpi, file_dialog, locale, paths, screen, session, startup,
+│   │   timer
+├── ui/             Dear ImGui dashboard and tabs
 └── app/            Application lifetime, CLI, single instance
 ```
 
@@ -129,10 +136,15 @@ this thread. In order:
 5. The panic chord toggles the enable flag, requests a release, and swallows
    both the press and the release. It is checked before the binding table and
    before the enable flag, because it is the way out of a bad configuration.
-6. Otherwise the swallow decision is a single `BindingTable::find()` and a
-   comparison; the matching key-up is swallowed too, so applications never see a
-   phantom release.
-7. The event is pushed to the ring, or counted as dropped when the ring is full.
+6. The mouse-mode and auto-click toggle chords flip their runtime switches and
+   are swallowed. Their releases are swallowed only when the matching press was
+   swallowed, so a plain `M` still delivers its key-up while `Ctrl+Alt+M` is the
+   mouse-mode chord.
+7. The lookup uses the plain-key table while mouse mode is on and the active
+   profile's chord table otherwise. Otherwise the swallow decision is a single
+   `BindingTable::find()` and a comparison; the matching key-up is swallowed
+   too, so applications never see a phantom release.
+8. The event is pushed to the ring, or counted as dropped when the ring is full.
 
 No allocation. No locks. No logging. Dropping a key event is better than missing
 the hook timeout.
@@ -142,21 +154,23 @@ the hook timeout.
 `Engine::pump` first applies any configuration published since the last call,
 then drains the ring and runs `Router`, which does allocate (it uses
 `std::unordered_map`). `Engine::tick` integrates motion and scroll by the
-measured `dt` and injects the result. A focused-away or locked session arrives
-as an ordinary queued event and releases everything held.
+measured `dt`, polls the auto-click scheduler, and injects the result. A
+focused-away or locked session arrives as an ordinary queued event and releases
+everything held; a lock also disarms mouse mode.
 
 `EngineConfig` reaches this thread as a whole `shared_ptr` snapshot. A
 half-updated configuration therefore cannot be applied, and the fields the hook
-thread needs — the panic chord, the binding table — are published separately and
-immediately.
+thread needs — the panic chord, the toggle chords, and both binding tables — are
+published separately and immediately.
 
 ### UI thread
 
 The dashboard may only call `apply_config`, `set_enabled`, `set_capture_mode`,
+`set_mouse_mode`, `set_auto_click_enabled`, `set_foreground_exe`,
 `request_release`, and the read-only accessors. Everything else — router state,
-motion state, injection — belongs to the engine thread. `EngineStats` is a
-snapshot by value: the counters are atomics written from both other threads, and
-reading them one by one could show a mixture of two moments.
+motion state, scheduler state, injection — belongs to the engine thread.
+`EngineStats` is a snapshot by value: the counters are atomics written from both
+other threads, and reading them one by one could show a mixture of two moments.
 
 ### Capture mode
 
@@ -164,7 +178,9 @@ While a chord recorder is open in the dashboard the hook neither swallows nor
 acts on anything. Events are still counted, but they reach the foreground
 application untouched, which is what makes it possible to re-record a chord that
 is already bound — otherwise the binding would eat the keys the user is pressing
-to describe it.
+to describe it. Entering capture mode clears the tracked toggle-key state; a
+held hold-to-activate mouse-mode key cannot see its release while the recorder is
+open, so the mode is disarmed rather than left on.
 
 ## Injection and feedback
 
@@ -178,8 +194,17 @@ does *not* filter events carrying `LLKHF_INJECTED`. Two reasons:
   It reads to the user as "KeyMouse randomly stops working".
 
 The one thing that does need care is that injected *movement* passes through the
-Windows pointer settings, which apply pointer acceleration to relative motion.
-See the note on speed in the README.
+Windows pointer settings when sent as relative `SendInput`, which applies pointer
+acceleration. Absolute movement uses `SetCursorPos` instead: it ignores those
+settings and is immune to acceleration, but games that read raw input may not see
+it. See the note on speed in the README.
+
+Auto-click runs on the engine thread and uses the same monotonic clock as motion.
+Each task stores an absolute deadline, so a slow tick does not accumulate drift.
+A deadline more than two seconds late is treated as a missed occurrence and
+skipped unless the task asks to run it once; this keeps a suspended machine from
+unloading a burst of clicks on resume. The foreground executable is hashed on the
+UI thread and published as an atomic for the only-if-app filter.
 
 ## Session and focus
 
@@ -197,12 +222,14 @@ key while alt-tabbing leaves the cursor drifting in the new window.
 load_config()
   ├─ read JSON
   ├─ from_json()      rejects newer schema, keeps .broken copy
-  ├─ sanitize()       clamps ranges, drops invalid bindings
+  ├─ migrate         schema 1 → 2: accel_max/curve = 1.0
+  ├─ sanitize()       clamps ranges, drops invalid bindings, seeds mouse table
   └─ validate()       reports problems, does not block startup
         │
         ▼
 apply_config_to_engine()
-  ├─ BindingTableStore::publish()   new immutable table
+  ├─ BindingTableStore::publish()   normal and mouse-mode tables
+  ├─ AutoClickScheduler::configure() keep or restart each task countdown
   └─ release_all()                  clear stuck keys
 ```
 

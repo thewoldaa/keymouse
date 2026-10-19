@@ -12,7 +12,7 @@ class I18n;
 
 namespace ui {
 
-enum class TrayStatus { Active, Disabled, Error };
+enum class TrayStatus { Active, Disabled, MouseMode, Error };
 
 // Owns the notification area icon and its context menu.
 //
@@ -23,10 +23,12 @@ public:
     struct Callbacks {
         std::function<void()> on_show;
         std::function<void()> on_toggle;
+        std::function<void()> on_mouse_mode;
         std::function<void()> on_exit;
         std::function<void(bool)> on_startup_changed;
         std::function<bool()> get_startup;
         std::function<bool()> get_enabled;
+        std::function<bool()> get_mouse_mode;
     };
 
     TrayIcon() = default;

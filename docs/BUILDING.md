@@ -46,8 +46,9 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 The suite covers the platform-independent core only (`keymouse_core`): chords,
-the binding table, the router, motion integration, configuration round-trips,
-profiles, and the lock-free queue. Anything that needs a window station, a hook,
+the binding table, the router, motion integration, configuration migration and
+round-trips, profiles and profile exchange, the auto-click scheduler, engine
+routing, and the lock-free queue. Anything that needs a window station, a hook,
 or a display is verified by running the application.
 
 `--success` and `--test-case=<name>` are doctest options and work as expected.

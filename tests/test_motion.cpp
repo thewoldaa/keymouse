@@ -15,6 +15,10 @@ MotionConfig make_config(double speed = 600.0, double accel = 0.0) {
     MotionConfig config;
     config.speed_px_s = speed;
     config.accel_ms = accel;
+    // Most tests measure the steady-state speed, so turn the ramp off unless a
+    // test opts into it.
+    config.accel_max = 1.0;
+    config.accel_curve = 1.0;
     return config;
 }
 
@@ -158,8 +162,10 @@ TEST_CASE("precision and turbo combine") {
 }
 
 TEST_CASE("acceleration ramps up over time") {
+    MotionConfig config = make_config(1000.0, 200.0);
+    config.accel_max = 3.0;
     Motion motion;
-    motion.configure(make_config(1000.0, 200.0));
+    motion.configure(config);
 
     int64_t early = 0;
     int64_t late = 0;

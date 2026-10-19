@@ -21,7 +21,7 @@ It is built for two groups:
 
 ## Status
 
-Version 0.1.0. Windows only. The core is platform independent so Linux and
+Version 0.2.0. Windows only. The core is platform independent so Linux and
 macOS backends can be added without rewriting the logic; see
 [docs/PORTING.md](docs/PORTING.md).
 
@@ -34,7 +34,15 @@ macOS backends can be added without rewriting the logic; see
 - **Per-application profiles** that switch automatically when a matching
   executable takes focus.
 - **Three presets** — Desktop, Numpad, and Game — selectable on first run.
-- **Precision and turbo modifiers**, acceleration, and diagonal normalisation.
+- **Precision and turbo modifiers**, an adjustable acceleration ramp and curve,
+  absolute or relative movement, and diagonal normalisation.
+- **Mouse mode** turns plain keys into a complete mouse — separate movement,
+  left/right/middle click, scroll, drag, precision, and turbo keys — without
+  holding Ctrl or an Fn key.
+- **Scheduled auto-click** with per-task interval, first delay, repeat limit,
+  missed-click handling, and an optional foreground-application filter.
+- **Profile import and export** as readable JSON, with automatic conflict-free
+  renaming when an imported profile already exists.
 - **Panic key** that disables every mapping instantly.
 - **Start with Windows** and a tray icon, both toggleable at any time.
 - **Four languages** — English, Russian, Japanese, Indonesian, detected from
@@ -54,11 +62,11 @@ Task Manager unless KeyMouse itself is run elevated.
 
 Each release is published in two forms:
 
-- **`KeyMouse-0.1.0-setup.exe`** — per-user install, no administrator prompt and
+- **`KeyMouse-0.2.0-setup.exe`** — per-user install, no administrator prompt and
   no `Program Files`. The wizard speaks English, Russian, Japanese, and
   Indonesian, and copies the documentation next to the application. Uninstalling
   asks whether to keep your settings.
-- **`KeyMouse-0.1.0-win64.zip`** — portable. Unpack it anywhere and run
+- **`KeyMouse-0.2.0-win64.zip`** — portable. Unpack it anywhere and run
   `KeyMouse.exe`; nothing is written outside `%LOCALAPPDATA%\KeyMouse`.
 
 Both are unsigned, so Windows SmartScreen may warn the first time.
@@ -130,6 +138,55 @@ exactly like `Fn + X` would, because the app controls both halves of the chord.
 
 Set it in **General → Fn layer key**. The default is the Menu (Apps) key.
 
+## Mouse mode
+
+Mouse mode is a second, plain-key binding table for the times when you want to
+drive the cursor without holding a modifier. It is off by default after an
+upgrade and is independent of the normal chord table: while it is on, only the
+plain-key table acts, and while it is off the normal bindings are untouched.
+
+| Action | Default key |
+|---|---|
+| Move up / down / left / right | `I` / `K` / `J` / `L` |
+| Left / right / middle click | `U` / `O` / `P` |
+| Scroll up / down | `Y` / `H` |
+| Precision / turbo | `F` / `G` |
+| Drag lock | `Space` |
+
+`Ctrl+Alt+M` toggles the mode. The Mouse mode tab can change the toggle chord,
+make it hold-to-activate instead, enable a short beep, start the mode with the
+application, and edit every plain-key binding. The dashboard header and the tray
+menu show the current state. Locking the workstation turns the mode off so plain
+keys are never left armed while you are away.
+
+## Profiles and sharing
+
+The Profiles tab exports the active profile to a JSON file and imports profiles
+exported from another machine. Imported profiles are validated, appended, and
+renamed if their name is already taken, so an import never overwrites your
+existing setup. The Bindings and Mouse mode tabs flag duplicate chords and
+reserved hotkeys before they can be added.
+
+## Auto-click
+
+Auto-click runs mouse actions on a schedule, for example a left click every
+twelve minutes. It has a master switch (`Ctrl+Alt+T`, or the Auto-click tab) and
+any number of tasks. Each task chooses:
+
+- an action: left, right, or middle click, or a left double-click;
+- an interval, from one second to seven days;
+- a delay before the first click, in seconds, minutes, or hours (zero means
+  "after one interval");
+- an unlimited repeat count or a limit after which the task disables itself;
+- an optional application name, so the task fires only while that executable is
+  in the foreground.
+
+The countdown and total clicks are shown in the tab and the Status tab. A
+deadline missed by more than two seconds — because the machine slept or KeyMouse
+was disabled — is skipped rather than fired late; tick "run missed clicks" on a
+task when a late click is preferable to a skipped one. Tasks do not start until
+the master switch is on.
+
 ## Configuration
 
 Settings live in `%LOCALAPPDATA%\KeyMouse\config.json`. The file is
@@ -137,17 +194,31 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "locale": "en",
   "enabled": true,
   "panic_key": { "mods": [], "key": "Pause" },
   "fn_layer_key": "Menu",
   "motion": {
     "speed_px_s": 600.0,
-    "accel_ms": 120.0,
+    "accel_ms": 600.0,
+    "accel_max": 3.0,
+    "accel_curve": 1.5,
     "precision_mult": 0.25,
     "turbo_mult": 3.0,
-    "diagonal_normalize": true
+    "diagonal_normalize": true,
+    "method": "relative"
+  },
+  "mouse_mode": {
+    "start_enabled": false,
+    "hold_to_activate": false,
+    "beep": true,
+    "toggle_key": { "mods": ["ctrl", "alt"], "key": "KeyM" }
+  },
+  "auto_click": {
+    "enabled": false,
+    "toggle_key": { "mods": ["ctrl", "alt"], "key": "KeyT" },
+    "tasks": []
   },
   "profiles": [
     {
@@ -162,6 +233,11 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
 }
 ```
 
+The sample is abridged: the dashboard also writes the full mouse-mode binding
+table, auto-click tasks, and the other settings shown in the tabs. Schema-1 files
+from 0.1.0 are migrated on load, with the previous fixed-speed feel preserved
+(`accel_max` and `accel_curve` set to 1.0).
+
 A malformed file is renamed to `config.json.broken` and defaults are used, so
 the app always starts.
 
@@ -171,7 +247,11 @@ the app always starts.
 |---|---|
 | The hardware `Fn` key cannot be bound | Handled by the keyboard controller, never reaches Windows |
 | Modifier matching is exact | While `Ctrl+Shift` is held, the plain `ArrowUp` binding does not fire. Subset matching would hijack `Ctrl+ArrowUp` in the applications you actually use, so the combinations have to be named |
-| Cursor speed follows the Windows pointer settings | Pointer acceleration applies to injected movement too, so the px/s number is a starting point: tune it by feel |
+| Cursor speed follows the Windows pointer settings | Pointer acceleration applies to injected relative movement too, so the px/s number is a starting point: tune it by feel |
+| Absolute movement is ignored by some games | It uses `SetCursorPos`, which raw-input games may not read; relative movement is the default for that reason |
+| Auto-click has a one-second minimum interval | It is a scheduler for periodic actions, not a rapid-fire clicker |
+| Auto-click only runs while KeyMouse is enabled | Its master switch and the KeyMouse enable switch are independent; both must be on |
+| Mouse mode is off after upgrading to 0.2.0 | It is an additional layer, so existing chord users are not surprised; turn it on with `Ctrl+Alt+M` or enable "start with the application" |
 | Some games ignore injected input | They read Raw Input rather than the standard message queue |
 | Competitive anti-cheat may block or flag injection | Out of scope; KeyMouse does not attempt to evade detection |
 | Elevated windows do not receive input | Windows UIPI. Run KeyMouse elevated if you need this |
@@ -181,17 +261,19 @@ the app always starts.
 
 ## Roadmap
 
-0.1.0 ships the whole feature list above: the hook, movement, clicks, scroll,
-drag lock, precision and turbo, the dashboard, per-application profiles, the
-panic key, four languages, the installer, the portable zip, and a test suite.
+0.2.0 adds mouse mode, the auto-click scheduler, profile import and export,
+absolute movement, and the acceleration curve on top of the 0.1.0 feature set.
+The hook, movement, clicks, scroll, drag lock, precision and turbo, the
+dashboard, per-application profiles, the panic key, four languages, the
+installer, the portable zip, and the test suite remain.
 
 Next:
 
-- **0.2** — signed binaries, an optional on-screen position indicator, profile
-  import and export, a first-run tour, and per-app profile switching by window
-  title
-- **Later** — Linux (X11, evdev/uinput) and macOS (CGEventTap) backends behind
-  the existing core; see [docs/PORTING.md](docs/PORTING.md)
+- **0.3** — a macro recorder, player, editor, and library
+- **Later** — signed binaries, an optional on-screen position indicator, a
+  first-run tour, and per-app profile switching by window title
+- **Platforms** — Linux (X11, evdev/uinput) and macOS (CGEventTap) backends
+  behind the existing core; see [docs/PORTING.md](docs/PORTING.md)
 
 ## License
 

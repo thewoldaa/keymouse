@@ -16,6 +16,7 @@ constexpr UINT kMenuToggle = 1001;
 constexpr UINT kMenuShow = 1002;
 constexpr UINT kMenuStartup = 1003;
 constexpr UINT kMenuExit = 1004;
+constexpr UINT kMenuMouseMode = 1005;
 
 // Status colours drawn as a small dot, since the .ico files are not shipped
 // per-state. A single icon plus a coloured overlay would need image editing at
@@ -66,6 +67,7 @@ COLORREF color_for(TrayStatus status) {
     switch (status) {
         case TrayStatus::Active: return RGB(0x4C, 0xC2, 0xA6);
         case TrayStatus::Disabled: return RGB(0x8A, 0x92, 0xA0);
+        case TrayStatus::MouseMode: return RGB(0x5A, 0xA9, 0xFF);
         case TrayStatus::Error: return RGB(0xE5, 0x6B, 0x6B);
     }
     return RGB(0x8A, 0x92, 0xA0);
@@ -214,9 +216,11 @@ void TrayIcon::show_menu() {
 
     const bool enabled = callbacks_.get_enabled ? callbacks_.get_enabled() : true;
     const bool startup = callbacks_.get_startup ? callbacks_.get_startup() : false;
+    const bool mouse_mode = callbacks_.get_mouse_mode ? callbacks_.get_mouse_mode() : false;
 
     const std::wstring open_label = text("tray.open");
     const std::wstring enabled_label = text("tray.enabled");
+    const std::wstring mouse_mode_label = text("tray.mouse_mode");
     const std::wstring startup_label = text("tray.start_with_windows");
     const std::wstring exit_label = text("tray.exit");
 
@@ -224,6 +228,8 @@ void TrayIcon::show_menu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (enabled ? MF_CHECKED : 0), kMenuToggle,
                 enabled_label.c_str());
+    AppendMenuW(menu, MF_STRING | (mouse_mode ? MF_CHECKED : 0), kMenuMouseMode,
+                mouse_mode_label.c_str());
     AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0), kMenuStartup,
                 startup_label.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -249,6 +255,9 @@ void TrayIcon::show_menu() {
             break;
         case kMenuToggle:
             if (callbacks_.on_toggle) callbacks_.on_toggle();
+            break;
+        case kMenuMouseMode:
+            if (callbacks_.on_mouse_mode) callbacks_.on_mouse_mode();
             break;
         case kMenuStartup:
             if (callbacks_.on_startup_changed) callbacks_.on_startup_changed(!startup);

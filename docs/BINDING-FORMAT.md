@@ -126,12 +126,32 @@ Use `swallow` (the default) for dedicated control keys.
 | `open_dashboard` | no | Shows the dashboard |
 | `speed_up` `speed_down` | no | Adjusts speed by 25% |
 
+## Mouse mode table
+
+`mouse_mode.bindings` uses exactly the same binding objects, but is a separate
+table that is only consulted while mouse mode is on. Its defaults are unmodified
+keys, because the point of the mode is that no Ctrl, Alt, or Fn layer is needed:
+
+| Action | Key |
+|---|---|
+| `move_up` / `move_down` / `move_left` / `move_right` | `KeyI` / `KeyK` / `KeyJ` / `KeyL` |
+| `click_left` / `click_right` / `click_middle` | `KeyU` / `KeyO` / `KeyP` |
+| `scroll_up` / `scroll_down` | `KeyY` / `KeyH` |
+| `precision` / `turbo` | `KeyF` / `KeyG` |
+| `drag_lock` | `Space` |
+
+The table can technically contain chords, but the dashboard and documentation
+assume plain keys; a modifier defeats the purpose of the mode. While mouse mode
+is on, the active profile's chord table is dormant. The toggle chord itself
+(`mouse_mode.toggle_key`, default `Ctrl+Alt+M`) is reserved and cannot be used
+inside either table.
+
 ## Validation rules
 
 KeyMouse reports these problems in the Diagnostics tab and repairs what it can:
 
-- A chord used twice in the same profile.
-- A binding on the panic key.
+- A chord used twice in the same profile or the mouse-mode table.
+- A binding on the panic key or on either toggle hotkey.
 - A profile with no movement bindings.
 - Duplicate profile names.
 - A binding with an invalid chord (dropped on load).

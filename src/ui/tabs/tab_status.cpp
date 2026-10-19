@@ -28,6 +28,17 @@ void draw_status_tab(DashboardContext& context) {
     ImGui::Spacing();
     widgets::key_value(tr.tr("status.enabled").data(),
         context.config->enabled ? tr.tr("common.yes").data() : tr.tr("common.no").data());
+    widgets::key_value(tr.tr("status.mouse_mode").data(),
+        context.mouse_mode ? tr.tr("common.yes").data() : tr.tr("common.no").data());
+    widgets::key_value(tr.tr("status.auto_click").data(),
+        context.config->auto_click.enabled ? tr.tr("common.yes").data()
+                                           : tr.tr("common.no").data());
+    if (context.auto_click_remaining_ms >= 0) {
+        char countdown[32];
+        widgets::format_duration(context.auto_click_remaining_ms, countdown,
+                                 sizeof(countdown));
+        widgets::key_value(tr.tr("status.auto_click_next").data(), countdown);
+    }
     widgets::key_value(tr.tr("status.foreground").data(),
         context.foreground_exe.empty() ? "-" : context.foreground_exe);
     widgets::key_value(tr.tr("status.profile").data(), context.config->active().name);

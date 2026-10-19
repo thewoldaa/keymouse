@@ -8,12 +8,13 @@
 #include <vector>
 
 #include "core/action.h"
+#include "core/autoclick.h"
 #include "core/binding.h"
 #include "core/motion.h"
 
 namespace km {
 
-inline constexpr int kConfigSchemaVersion = 1;
+inline constexpr int kConfigSchemaVersion = 2;
 
 // A named set of bindings, optionally activated automatically when a
 // particular executable is in the foreground.
@@ -22,6 +23,33 @@ struct Profile {
     // Executable name to match, e.g. "game.exe". Empty means manual only.
     std::string match_exe;
     std::vector<Binding> bindings;
+};
+
+// A second binding table that only works while mouse mode is on.
+//
+// This is the "turn the keyboard into a mouse" layer: the keys here are meant
+// to be plain keys (no Ctrl, Alt, or Fn), so the hand rests on one cluster and
+// every mouse action is one press. While the mode is off these keys type
+// normally and are never swallowed.
+struct MouseModeConfig {
+    // Whether the mode comes up enabled when KeyMouse starts.
+    bool start_enabled = false;
+    // Toggle: press the key once to enter the mode, again to leave it.
+    // Hold: the mode is only active while the key is held.
+    bool hold_to_activate = false;
+    // Short beep when the mode changes, so a hidden window is not the only
+    // feedback.
+    bool beep = true;
+    Chord toggle_key{ModCtrl | ModAlt, key::KeyM};
+    std::vector<Binding> bindings;
+};
+
+struct AutoClickConfig {
+    // Master switch. Individual tasks also have their own enabled flag.
+    bool enabled = false;
+    // Always-active chord that turns every task on or off, like the panic key.
+    Chord toggle_key{ModCtrl | ModAlt, key::KeyT};
+    std::vector<AutoClickTask> tasks;
 };
 
 struct AppConfig {
@@ -45,6 +73,10 @@ struct AppConfig {
     MotionConfig motion;
     double scroll_lines_per_second = 8.0;
 
+    // Mouse mode and scheduled clicking
+    MouseModeConfig mouse_mode;
+    AutoClickConfig auto_click;
+
     // Profiles
     std::vector<Profile> profiles{Profile{}};
     size_t active_profile = 0;
@@ -54,8 +86,14 @@ struct AppConfig {
     Profile& active();
     const Profile& active() const;
 
-    // True when `chord` is already used by any binding in any profile.
+    // True when `chord` is used by any profile binding or by a mouse-mode
+    // binding. Used to keep the panic key and the toggle keys free.
     bool chord_in_use(const Chord& chord, const std::string& ignore_profile = {}) const;
+
+    // True when the chord is a mode control key (panic, mouse-mode toggle,
+    // auto-click toggle). Those are handled by the engine outside the binding
+    // tables and must not be bound to an action.
+    bool chord_is_reserved(const Chord& chord) const;
 };
 
 // Default configuration used on first run: the "desktop" preset.
@@ -65,8 +103,19 @@ AppConfig make_default_config();
 enum class Preset { Desktop, Numpad, Game };
 AppConfig make_preset(Preset preset);
 
+// The plain-key mouse-mode table. Shared by every preset; it is a separate
+// concept from the always-on chord bindings.
+std::vector<Binding> make_mouse_mode_bindings();
+
 // Serialization. to_json produces pretty-printed, stable key order.
 std::string to_json(const AppConfig& config);
+
+// Profile exchange format used by the Profiles tab. Wraps one or more
+// profiles with a format tag so importing an unrelated JSON file fails with a
+// clear error instead of silently producing an empty profile.
+std::string profiles_to_json(const std::vector<Profile>& profiles);
+std::optional<std::vector<Profile>> profiles_from_json(std::string_view text,
+                                                       std::string& error);
 
 // Returns nullopt and fills `error` on malformed input. Unknown keys are
 // ignored so that configs written by a newer version still load.

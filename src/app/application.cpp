@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/application.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +20,8 @@
 #include "core/profiles.h"
 #include "core/version.h"
 #include "input/backend_win32.h"
+#include "platform/beep.h"
+#include "platform/dpi.h"
 #include "platform/locale.h"
 #include "platform/paths.h"
 #include "platform/screen.h"
@@ -227,6 +230,11 @@ bool Application::initialize(int argc, wchar_t** argv) {
     engine_->apply_config(config_);
     backend_->set_fn_layer_key(config_.fn_layer_key);
 
+    // The saved "start enabled" preference arms mouse mode before the first
+    // key event. Starting the app must not beep, so drop the feedback request.
+    engine_->set_mouse_mode(config_.mouse_mode.start_enabled);
+    engine_->consume_beep_request();
+
     if (!options_.safe_mode && !install_hook()) {
         MessageBoxW(nullptr,
             L"KeyMouse could not install its keyboard hook.\n"
@@ -246,6 +254,11 @@ bool Application::initialize(int argc, wchar_t** argv) {
     ui::TrayIcon::Callbacks callbacks;
     callbacks.on_show = [this] { show_dashboard(); };
     callbacks.on_toggle = [this] { toggle_enabled(); };
+    callbacks.on_mouse_mode = [this] {
+        if (engine_) {
+            engine_->set_mouse_mode(!engine_->mouse_mode());
+        }
+    };
     callbacks.on_exit = [this] { request_exit_ = true; PostQuitMessage(0); };
     callbacks.on_startup_changed = [this](bool enabled) {
         startup::set_enabled(enabled);
@@ -254,6 +267,7 @@ bool Application::initialize(int argc, wchar_t** argv) {
     };
     callbacks.get_startup = [] { return startup::is_enabled(); };
     callbacks.get_enabled = [this] { return config_.enabled; };
+    callbacks.get_mouse_mode = [this] { return engine_ && engine_->mouse_mode(); };
     tray_->set_callbacks(callbacks);
     tray_->set_i18n(&i18n_);
     sync_tray_visibility();
@@ -337,11 +351,29 @@ bool Application::create_window() {
         WS_EX_APPWINDOW,
         kWindowClass, kWindowTitle,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 880, 640,
+        CW_USEDEFAULT, CW_USEDEFAULT, 980, 700,
         nullptr, nullptr, instance, this);
 
     if (!window_) {
         return false;
+    }
+
+    // Size for the monitor's DPI and keep the window inside the work area. On a
+    // small screen or a scaled display the nominal 980x700 would otherwise be
+    // either too small for the fonts or partly below the taskbar.
+    dpi_scale_ = dpi::scale_for_window(window_);
+    RECT work{};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        const int max_width = work.right - work.left - 32;
+        const int max_height = work.bottom - work.top - 32;
+        const int width = std::clamp(
+            static_cast<int>(980.0f * dpi_scale_), 320, std::max(max_width, 320));
+        const int height = std::clamp(
+            static_cast<int>(700.0f * dpi_scale_), 240, std::max(max_height, 240));
+        const int x = work.left + (work.right - work.left - width) / 2;
+        const int y = work.top + (work.bottom - work.top - height) / 2;
+        SetWindowPos(window_, nullptr, x, y, width, height,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     // Dark title bar, which is otherwise white and jarring next to the theme.
@@ -438,9 +470,13 @@ void Application::render_frame() {
     // a consistent snapshot.
     dashboard_.hook_running = backend_ && backend_->running();
     dashboard_.elevated = screen::is_elevated();
-    dashboard_.foreground_exe = screen::foreground_exe_name();
+    dashboard_.foreground_exe = foreground_exe_;
     dashboard_.stats = engine_ ? engine_->stats() : EngineStats{};
     dashboard_.active_mask = engine_ ? engine_->active_mask() : 0u;
+    dashboard_.mouse_mode = engine_ && engine_->mouse_mode();
+    dashboard_.auto_click_remaining_ms =
+        engine_ && engine_->enabled() ? engine_->auto_click_remaining_ms() : -1;
+    dashboard_.auto_click_fires = engine_ ? engine_->auto_click_fires() : 0;
     dashboard_.capture_active = false;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -449,12 +485,32 @@ void Application::render_frame() {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus |
-                 ImGuiWindowFlags_NoScrollbar);
+                 ImGuiWindowFlags_NoScrollbar |
+                 ImGuiWindowFlags_NoScrollWithMouse);
 
     // Header: title, version, and the enable switch.
     ImGui::TextUnformatted(i18n_.tr("app.name").data());
     ImGui::SameLine();
     ImGui::TextDisabled("| %s", version::kVersion);
+
+    ImGui::SameLine();
+    const bool mouse_mode = engine_ && engine_->mouse_mode();
+    const std::string mouse_label = std::string(i18n_.tr("status.mouse_mode").data()) +
+                                    ": " +
+                                    (mouse_mode ? i18n_.tr("common.yes").data()
+                                                : i18n_.tr("common.no").data());
+    if (mouse_mode) {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::ColorConvertU32ToFloat4(ui::colors::kAccent));
+    }
+    if (ImGui::SmallButton(mouse_label.c_str())) {
+        if (engine_) {
+            engine_->set_mouse_mode(!mouse_mode);
+        }
+    }
+    if (mouse_mode) {
+        ImGui::PopStyleColor();
+    }
 
     const char* enabled_label = i18n_.tr("status.enabled").data();
     const float switch_width = ImGui::GetFrameHeight() +
@@ -469,29 +525,48 @@ void Application::render_frame() {
 
     ImGui::Separator();
 
+    // Keep the header and the tab bar fixed. A tab that is taller than the
+    // window scrolls inside this child instead of moving the whole dashboard,
+    // which otherwise hides the only way back to another tab.
+    const auto draw_tab_body = [](const char* id, const auto& draw) {
+        ImGui::BeginChild(id, ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_None);
+        draw();
+        ImGui::EndChild();
+    };
+
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem(i18n_.tr("tab.status").data())) {
-            ui::draw_status_tab(dashboard_);
+            draw_tab_body("status_body", [&] { ui::draw_status_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(i18n_.tr("tab.bindings").data())) {
-            ui::draw_bindings_tab(dashboard_);
+            draw_tab_body("bindings_body", [&] { ui::draw_bindings_tab(dashboard_); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(i18n_.tr("tab.mouse_mode").data())) {
+            draw_tab_body("mouse_mode_body", [&] { ui::draw_mouse_mode_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(i18n_.tr("tab.movement").data())) {
-            ui::draw_movement_tab(dashboard_);
+            draw_tab_body("movement_body", [&] { ui::draw_movement_tab(dashboard_); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(i18n_.tr("tab.auto_click").data())) {
+            draw_tab_body("auto_click_body", [&] { ui::draw_auto_click_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(i18n_.tr("tab.profiles").data())) {
-            ui::draw_profiles_tab(dashboard_);
+            draw_tab_body("profiles_body", [&] { ui::draw_profiles_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(i18n_.tr("tab.general").data())) {
-            ui::draw_general_tab(dashboard_);
+            draw_tab_body("general_body", [&] { ui::draw_general_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(i18n_.tr("tab.diagnostics").data())) {
-            ui::draw_diagnostics_tab(dashboard_);
+            draw_tab_body("diagnostics_body",
+                          [&] { ui::draw_diagnostics_tab(dashboard_); });
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -624,6 +699,7 @@ void Application::apply_config_to_engine() {
         engine_->apply_config(config_);
     }
     sync_tray_visibility();
+    update_tray_status();
 }
 
 void Application::reload_locale() {
@@ -643,8 +719,12 @@ void Application::on_session_event(session::SessionEvent event) {
     switch (event) {
         case session::SessionEvent::Locked:
             // Keys held on the way in are gone; without this the cursor would
-            // keep moving behind the lock screen.
+            // keep moving behind the lock screen. Mouse mode is disarmed too:
+            // plain keys must not stay armed while the user is away.
             if (engine_) {
+                engine_->set_mouse_mode(false);
+                engine_->forget_toggle_states();
+                engine_->consume_beep_request();
                 engine_->request_release();
             }
             break;
@@ -658,8 +738,7 @@ void Application::on_session_event(session::SessionEvent event) {
                 engine_->request_release();
             }
             if (tray_) {
-                tray_->set_status(config_.enabled ? ui::TrayStatus::Active
-                                                  : ui::TrayStatus::Disabled);
+                update_tray_status();
             }
             break;
 
@@ -710,10 +789,21 @@ void Application::set_enabled(bool enabled) {
     if (engine_) {
         engine_->set_enabled(enabled);
     }
-    if (tray_) {
-        tray_->set_status(enabled ? ui::TrayStatus::Active : ui::TrayStatus::Disabled);
-    }
+    update_tray_status();
     config_dirty_ = true;
+}
+
+void Application::update_tray_status() {
+    if (!tray_) {
+        return;
+    }
+    ui::TrayStatus status = ui::TrayStatus::Active;
+    if (!config_.enabled) {
+        status = ui::TrayStatus::Disabled;
+    } else if (engine_ && engine_->mouse_mode()) {
+        status = ui::TrayStatus::MouseMode;
+    }
+    tray_->set_status(status);
 }
 
 void Application::sync_from_engine() {
@@ -726,10 +816,24 @@ void Application::sync_from_engine() {
     const bool engine_enabled = engine_->enabled();
     if (engine_enabled != config_.enabled) {
         config_.enabled = engine_enabled;
-        if (tray_) {
-            tray_->set_status(engine_enabled ? ui::TrayStatus::Active
-                                             : ui::TrayStatus::Disabled);
-        }
+        update_tray_status();
+        config_dirty_ = true;
+    }
+
+    // Mouse mode is runtime state. It is not persisted, but the tray icon and
+    // the beep report changes made by the toggle key or the tray menu.
+    const bool mode = engine_->mouse_mode();
+    if (mode != last_mouse_mode_) {
+        last_mouse_mode_ = mode;
+        update_tray_status();
+    }
+    if (engine_->consume_beep_request()) {
+        platform::beep();
+    }
+
+    // The auto-click key flips the master switch without touching the config.
+    if (engine_->consume_auto_click_change()) {
+        config_.auto_click.enabled = engine_->auto_click_enabled();
         config_dirty_ = true;
     }
 
@@ -762,8 +866,7 @@ void Application::sync_tray_visibility() {
     if (config_.show_tray_icon && !tray_visible_) {
         if (tray_->create(window_, nullptr)) {
             tray_visible_ = true;
-            tray_->set_status(config_.enabled ? ui::TrayStatus::Active
-                                              : ui::TrayStatus::Disabled);
+            update_tray_status();
         }
     } else if (!config_.show_tray_icon && tray_visible_) {
         tray_->destroy();
@@ -792,24 +895,30 @@ void Application::on_command(const std::string& command) {
 }
 
 void Application::poll_foreground() {
-    if (!config_.auto_switch_profiles || config_.profiles.size() < 2) {
-        return;
-    }
-
     const auto now = std::chrono::steady_clock::now();
     if (now - last_foreground_poll_ < kForegroundPollPeriod) {
         return;
     }
     last_foreground_poll_ = now;
 
-    static std::string last_exe;
-    const std::string exe = screen::foreground_exe_name();
-    if (exe == last_exe) {
+    // Keep this running even with a single profile: the auto-click only_if_app
+    // filter and the status tab both need to know what is in front.
+    foreground_exe_ = screen::foreground_exe_name();
+    if (engine_) {
+        engine_->set_foreground_exe(foreground_exe_);
+    }
+
+    if (!config_.auto_switch_profiles || config_.profiles.size() < 2) {
         return;
     }
-    last_exe = exe;
 
-    const ProfileMatch match = match_profile(config_, exe);
+    static std::string last_exe;
+    if (foreground_exe_ == last_exe) {
+        return;
+    }
+    last_exe = foreground_exe_;
+
+    const ProfileMatch match = match_profile(config_, foreground_exe_);
     if (match.matched && match.index != config_.active_profile) {
         config_.active_profile = match.index;
         apply_config_to_engine();
@@ -879,8 +988,13 @@ LRESULT CALLBACK Application::window_proc(HWND hwnd, UINT msg, WPARAM wparam, LP
                              suggested->right - suggested->left,
                              suggested->bottom - suggested->top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
-                ui::apply_theme(g_app->dpi_scale_);
-                ui::rebuild_fonts(g_app->dpi_scale_);
+                // A DPI change can arrive while the window is being created,
+                // before the ImGui context exists. create_device() then uses the
+                // updated scale for the first font atlas.
+                if (ImGui::GetCurrentContext()) {
+                    ui::apply_theme(g_app->dpi_scale_);
+                    ui::rebuild_fonts(g_app->dpi_scale_);
+                }
             }
             return 0;
 

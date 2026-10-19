@@ -23,9 +23,34 @@ using KeyId = uint16_t;
 namespace key {
 inline constexpr KeyId Invalid = 0;
 
-// Letters: KeyA..KeyZ are contiguous.
+// Letters: KeyA..KeyZ are contiguous. Named constants exist so configuration
+// code reads as key names rather than as offsets.
 inline constexpr KeyId KeyA = 4;
-inline constexpr KeyId KeyZ = 29;
+inline constexpr KeyId KeyB = KeyA + 1;
+inline constexpr KeyId KeyC = KeyA + 2;
+inline constexpr KeyId KeyD = KeyA + 3;
+inline constexpr KeyId KeyE = KeyA + 4;
+inline constexpr KeyId KeyF = KeyA + 5;
+inline constexpr KeyId KeyG = KeyA + 6;
+inline constexpr KeyId KeyH = KeyA + 7;
+inline constexpr KeyId KeyI = KeyA + 8;
+inline constexpr KeyId KeyJ = KeyA + 9;
+inline constexpr KeyId KeyK = KeyA + 10;
+inline constexpr KeyId KeyL = KeyA + 11;
+inline constexpr KeyId KeyM = KeyA + 12;
+inline constexpr KeyId KeyN = KeyA + 13;
+inline constexpr KeyId KeyO = KeyA + 14;
+inline constexpr KeyId KeyP = KeyA + 15;
+inline constexpr KeyId KeyQ = KeyA + 16;
+inline constexpr KeyId KeyR = KeyA + 17;
+inline constexpr KeyId KeyS = KeyA + 18;
+inline constexpr KeyId KeyT = KeyA + 19;
+inline constexpr KeyId KeyU = KeyA + 20;
+inline constexpr KeyId KeyV = KeyA + 21;
+inline constexpr KeyId KeyW = KeyA + 22;
+inline constexpr KeyId KeyX = KeyA + 23;
+inline constexpr KeyId KeyY = KeyA + 24;
+inline constexpr KeyId KeyZ = KeyA + 25;
 
 // Digits: Digit1..Digit9 then Digit0.
 inline constexpr KeyId Key1 = 30;

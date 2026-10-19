@@ -3,6 +3,7 @@
 
 #include <string>
 #include <string_view>
+#include <cstdio>
 
 #include <imgui.h>
 
@@ -122,6 +123,41 @@ const char* bind_mode_label(I18n& i18n, BindMode mode) {
 bool mask_has(uint32_t mask, Action action) {
     const auto bit = static_cast<unsigned>(action);
     return bit < 32 && (mask & (1u << bit)) != 0;
+}
+
+bool input_text(const char* label, std::string& value, ImGuiInputTextFlags flags) {
+    return ImGui::InputText(label, value.data(), value.capacity() + 1,
+                            flags | ImGuiInputTextFlags_CallbackResize,
+                            [](ImGuiInputTextCallbackData* data) {
+                                if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+                                    auto* text = static_cast<std::string*>(data->UserData);
+                                    text->resize(static_cast<size_t>(data->BufTextLen));
+                                    data->Buf = text->data();
+                                }
+                                return 0;
+                            },
+                            &value);
+}
+
+void format_duration(int64_t milliseconds, char* out, size_t out_size) {
+    if (milliseconds < 0) {
+        std::snprintf(out, out_size, "-");
+        return;
+    }
+    const int64_t total_seconds = milliseconds / 1000;
+    const int64_t hours = total_seconds / 3600;
+    const int64_t minutes = (total_seconds / 60) % 60;
+    const int64_t seconds = total_seconds % 60;
+    if (hours > 0) {
+        std::snprintf(out, out_size, "%lld:%02lld:%02lld",
+                      static_cast<long long>(hours),
+                      static_cast<long long>(minutes),
+                      static_cast<long long>(seconds));
+    } else {
+        std::snprintf(out, out_size, "%lld:%02lld",
+                      static_cast<long long>(total_seconds / 60),
+                      static_cast<long long>(seconds));
+    }
 }
 
 }  // namespace widgets

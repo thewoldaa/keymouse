@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -15,6 +16,7 @@
 #include "core/config.h"
 #include "core/motion.h"
 #include "core/router.h"
+#include "core/scheduler.h"
 #include "core/spsc_ring.h"
 #include "input/input_backend.h"
 
@@ -57,8 +59,16 @@ struct EngineConfig {
     MotionConfig motion;
     double scroll_lines_per_second = 8.0;
     std::vector<Binding> bindings;
+    // The plain-key table used only while mouse mode is on.
+    std::vector<Binding> mouse_bindings;
     KeyId fn_layer_key = key::Menu;
     Chord panic_key{ModNone, key::Pause};
+    Chord mouse_toggle_key{ModCtrl | ModAlt, key::KeyM};
+    bool mouse_hold_to_activate = false;
+    bool mouse_beep = true;
+    Chord auto_click_toggle_key{ModCtrl | ModAlt, key::KeyT};
+    std::vector<AutoClickTask> auto_click_tasks;
+    bool auto_click_enabled = false;
 };
 
 // Converts key events into cursor motion and button presses.
@@ -94,10 +104,45 @@ public:
     // While capture mode is on, events are neither swallowed nor acted on, so
     // the dashboard can record a chord that is already bound. The hook still
     // runs; it just stops interpreting.
-    void set_capture_mode(bool capturing) {
-        capture_mode_.store(capturing, std::memory_order_relaxed);
-    }
+    void set_capture_mode(bool capturing);
     bool capture_mode() const { return capture_mode_.load(std::memory_order_relaxed); }
+
+    // Mouse mode: the plain-key table that only acts while this is on.
+    // Safe from any thread; the engine thread releases held keys.
+    void set_mouse_mode(bool on);
+    bool mouse_mode() const { return mouse_mode_.load(std::memory_order_relaxed); }
+
+    // Drop the "the toggle key is physically down" state. Windows can swallow
+    // the matching key-up when the session locks or the hook is replaced, and
+    // without this the next press of a toggle key would be treated as
+    // auto-repeat and ignored.
+    void forget_toggle_states();
+
+    // Scheduled clicking. The enabled flag mirrors the master switch in the
+    // config; the scheduler itself is configured on the engine thread.
+    void set_auto_click_enabled(bool on);
+    bool auto_click_enabled() const {
+        return auto_click_enabled_.load(std::memory_order_relaxed);
+    }
+
+    // Hotkey/UI feedback consumed by the application layer.
+    bool consume_beep_request() {
+        return beep_requested_.exchange(false, std::memory_order_relaxed);
+    }
+    // True when the auto-click hotkey changed the switch, so the caller can
+    // persist the new state. The state itself is read with auto_click_enabled().
+    bool consume_auto_click_change() {
+        return auto_click_change_.exchange(false, std::memory_order_relaxed);
+    }
+    // Milliseconds until the next scheduled click, or -1 when none is armed.
+    int64_t auto_click_remaining_ms() const;
+    uint64_t auto_click_fires() const {
+        return auto_click_fires_.load(std::memory_order_relaxed);
+    }
+
+    // Lowercased foreground executable name, reduced to a hash for the
+    // only_if_app filter. Safe from any thread.
+    void set_foreground_exe(std::string_view exe);
 
     // Hook thread entry point. Returns true when the event must be consumed.
     bool on_input_event(const InputEvent& event);
@@ -146,6 +191,7 @@ private:
     void handle_action(Action action, bool active);
     void apply_drag_lock(bool engaged);
     void refresh_active_mask();
+    void fire_auto_click(AutoClickAction action);
 
     static void bump(std::atomic<uint64_t>& counter) {
         counter.fetch_add(1, std::memory_order_relaxed);
@@ -153,11 +199,20 @@ private:
 
     InputBackend& backend_;
     BindingTableStore table_store_;
+    BindingTableStore mouse_table_store_;
     Router router_;
+    Router mouse_router_;
     Motion motion_;
+    AutoClickScheduler scheduler_;
 
     // Hook thread -> engine thread.
     SpscRing<QueuedEvent, 512> queue_{};
+
+    // Which key-downs were swallowed on the hook thread. The matching key-up
+    // must be swallowed even if the modifier state changed or the mode was
+    // switched in between, otherwise the application sees a release it never
+    // saw pressed.
+    std::array<std::atomic<bool>, 256> swallowed_keys_{};
 
     // UI thread -> engine thread configuration handoff.
     mutable std::mutex config_mutex_;
@@ -177,6 +232,26 @@ private:
     // impossible for either.
     std::atomic<uint16_t> panic_key_{key::Pause};
     std::atomic<uint8_t> panic_mods_{ModNone};
+
+    // Mouse mode. The toggle is handled on the hook thread, like the panic key,
+    // so it works even while the engine is disabled and the dashboard is hidden.
+    std::atomic<bool> mouse_mode_{false};
+    std::atomic<bool> mouse_hold_{false};
+    std::atomic<bool> mouse_beep_{true};
+    std::atomic<uint16_t> mouse_toggle_key_{key::KeyM};
+    std::atomic<uint8_t> mouse_toggle_mods_{ModCtrl | ModAlt};
+    std::atomic<bool> mouse_toggle_down_{false};
+    std::atomic<bool> beep_requested_{false};
+
+    // Auto-click master toggle, also handled on the hook thread.
+    std::atomic<uint16_t> auto_click_toggle_key_{key::KeyT};
+    std::atomic<uint8_t> auto_click_toggle_mods_{ModCtrl | ModAlt};
+    std::atomic<bool> auto_click_toggle_down_{false};
+    std::atomic<bool> auto_click_enabled_{false};
+    std::atomic<bool> auto_click_change_{false};
+    std::atomic<int64_t> auto_click_next_due_ms_{-1};
+    std::atomic<uint64_t> auto_click_fires_{0};
+    std::atomic<uint64_t> foreground_hash_{0};
 
     // Speed selected by a SpeedUp/SpeedDown binding, in px/s, or 0 when no
     // change is pending.
@@ -213,6 +288,7 @@ private:
     MotionConfig motion_config_{};
     double scroll_lines_per_second_ = 8.0;
     double scroll_remainder_ = 0.0;
+    bool auto_click_initialized_ = false;
 };
 
 }  // namespace km

@@ -52,6 +52,25 @@ public:
     virtual void button(MouseButton button, bool down) = 0;
     virtual void scroll(Axis axis, int32_t delta) = 0;
 
+    // Absolute positioning, used by MotionMethod::Absolute. The default
+    // implementation reports "unsupported" so backends can ignore it; the
+    // engine falls back to relative movement.
+    virtual void move_to(int32_t x, int32_t y) { (void)x; (void)y; }
+    virtual bool cursor_position(int32_t& x, int32_t& y) {
+        (void)x;
+        (void)y;
+        return false;
+    }
+    // Bounding box of the virtual desktop, in the same coordinates as
+    // cursor_position().
+    virtual bool screen_bounds(int32_t& left, int32_t& top, int32_t& right, int32_t& bottom) {
+        (void)left;
+        (void)top;
+        (void)right;
+        (void)bottom;
+        return false;
+    }
+
     // Tells the backend which physical key the user selected as the "Fn layer"
     // modifier, so it can include ModFn in the modifier mask it reports. Called
     // from the UI thread whenever the configuration changes. Backends that

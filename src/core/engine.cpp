@@ -11,12 +11,24 @@ namespace {
 // single line is 40 units.
 constexpr int32_t kScrollUnitsPerLine = 40;
 
+int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::shared_ptr<const EngineConfig> make_engine_config(const AppConfig& config) {
     auto out = std::make_shared<EngineConfig>();
     out->motion = config.motion;
     out->scroll_lines_per_second = config.scroll_lines_per_second;
     out->fn_layer_key = config.fn_layer_key;
     out->panic_key = config.panic_key;
+    out->mouse_bindings = config.mouse_mode.bindings;
+    out->mouse_toggle_key = config.mouse_mode.toggle_key;
+    out->mouse_hold_to_activate = config.mouse_mode.hold_to_activate;
+    out->mouse_beep = config.mouse_mode.beep;
+    out->auto_click_toggle_key = config.auto_click.toggle_key;
+    out->auto_click_tasks = config.auto_click.tasks;
+    out->auto_click_enabled = config.auto_click.enabled;
     if (!config.profiles.empty()) {
         const size_t index = config.active_profile < config.profiles.size()
             ? config.active_profile
@@ -41,9 +53,20 @@ void Engine::apply_config(const AppConfig& config) {
     // and a key pressed during the reload must already be judged by the new
     // bindings.
     table_store_.publish(snapshot->bindings);
+    mouse_table_store_.publish(snapshot->mouse_bindings);
 
     panic_key_.store(snapshot->panic_key.key, std::memory_order_relaxed);
     panic_mods_.store(snapshot->panic_key.mods, std::memory_order_relaxed);
+
+    mouse_toggle_key_.store(snapshot->mouse_toggle_key.key, std::memory_order_relaxed);
+    mouse_toggle_mods_.store(snapshot->mouse_toggle_key.mods, std::memory_order_relaxed);
+    mouse_hold_.store(snapshot->mouse_hold_to_activate, std::memory_order_relaxed);
+    mouse_beep_.store(snapshot->mouse_beep, std::memory_order_relaxed);
+
+    auto_click_toggle_key_.store(snapshot->auto_click_toggle_key.key,
+                                 std::memory_order_relaxed);
+    auto_click_toggle_mods_.store(snapshot->auto_click_toggle_key.mods,
+                                  std::memory_order_relaxed);
 
     enabled_.store(config.enabled, std::memory_order_relaxed);
 
@@ -95,6 +118,58 @@ bool Engine::on_input_event(const InputEvent& event) {
         return true;
     }
 
+    // Mouse mode and the auto-click switch are handled here, like the panic
+    // key, so they work while the dashboard is hidden and are never delivered
+    // to the foreground application.
+    const bool is_down = event.type == InputEvent::Type::KeyDown;
+    const bool is_up = event.type == InputEvent::Type::KeyUp;
+
+    if (event.key == mouse_toggle_key_.load(std::memory_order_relaxed)) {
+        if (is_down && event.mods == mouse_toggle_mods_.load(std::memory_order_relaxed)) {
+            if (!mouse_toggle_down_.exchange(true, std::memory_order_relaxed)) {
+                if (mouse_hold_.load(std::memory_order_relaxed)) {
+                    mouse_mode_.store(true, std::memory_order_relaxed);
+                } else {
+                    mouse_mode_.store(!mouse_mode_.load(std::memory_order_relaxed),
+                                      std::memory_order_relaxed);
+                }
+                release_requested_.store(true, std::memory_order_relaxed);
+                if (mouse_beep_.load(std::memory_order_relaxed)) {
+                    beep_requested_.store(true, std::memory_order_relaxed);
+                }
+            }
+            return true;
+        }
+        // Only swallow the release of a press that was actually consumed. A
+        // plain "M" must not lose its key-up just because Ctrl+Alt+M is the
+        // toggle chord: the foreground application would keep M stuck down.
+        if (is_up && mouse_toggle_down_.exchange(false, std::memory_order_relaxed)) {
+            if (mouse_hold_.load(std::memory_order_relaxed) &&
+                mouse_mode_.exchange(false, std::memory_order_relaxed)) {
+                release_requested_.store(true, std::memory_order_relaxed);
+                if (mouse_beep_.load(std::memory_order_relaxed)) {
+                    beep_requested_.store(true, std::memory_order_relaxed);
+                }
+            }
+            return true;
+        }
+    }
+
+    if (event.key == auto_click_toggle_key_.load(std::memory_order_relaxed)) {
+        if (is_down && event.mods == auto_click_toggle_mods_.load(std::memory_order_relaxed)) {
+            if (!auto_click_toggle_down_.exchange(true, std::memory_order_relaxed)) {
+                auto_click_enabled_.store(
+                    !auto_click_enabled_.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
+                auto_click_change_.store(true, std::memory_order_relaxed);
+            }
+            return true;
+        }
+        if (is_up && auto_click_toggle_down_.exchange(false, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
     QueuedEvent queued;
 
     switch (event.type) {
@@ -117,15 +192,35 @@ bool Engine::on_input_event(const InputEvent& event) {
     // The swallow decision has to be made here, on the hook thread, because
     // the return value is what stops the key. It is a pure table lookup.
     bool swallow = false;
-    if (enabled_.load(std::memory_order_relaxed) &&
-        (event.type == InputEvent::Type::KeyDown ||
-         event.type == InputEvent::Type::KeyUp)) {
-        // The matching key-up is swallowed too, otherwise applications see a
-        // phantom release for a key they never saw pressed.
-        const BindingEntry* entry = table_store_.current()->find(event.mods, event.key);
-        swallow = entry != nullptr && entry->swallow == SwallowMode::Swallow;
-        if (swallow && event.type == InputEvent::Type::KeyDown) {
-            bump(counters_.swallowed_events);
+    if (event.type == InputEvent::Type::KeyDown || event.type == InputEvent::Type::KeyUp) {
+        if (event.type == InputEvent::Type::KeyDown) {
+            const bool active = enabled_.load(std::memory_order_relaxed);
+            bool should_swallow = false;
+            if (active) {
+                // While mouse mode is on, the plain-key table is the only one
+                // that acts. The always-on chords stay dormant so a mode key
+                // and a chord can never fire together.
+                const BindingTable* table = mouse_mode_.load(std::memory_order_relaxed)
+                    ? mouse_table_store_.current()
+                    : table_store_.current();
+                const BindingEntry* entry = table->find(event.mods, event.key);
+                should_swallow = entry != nullptr && entry->swallow == SwallowMode::Swallow;
+            }
+            if (event.key < swallowed_keys_.size()) {
+                swallowed_keys_[event.key].store(should_swallow,
+                                                 std::memory_order_relaxed);
+            }
+            if (should_swallow) {
+                bump(counters_.swallowed_events);
+            }
+            swallow = should_swallow;
+        } else {
+            // Swallow the release of a key whose press was swallowed, even if
+            // the modifiers changed or mouse mode was toggled in between.
+            if (event.key < swallowed_keys_.size()) {
+                swallow = swallowed_keys_[event.key].exchange(
+                    false, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -154,6 +249,14 @@ size_t Engine::pump() {
         if (event.kind == QueuedEvent::Kind::FocusLost ||
             event.kind == QueuedEvent::Kind::SessionLost) {
             bump(counters_.focus_losses);
+            if (event.kind == QueuedEvent::Kind::SessionLost) {
+                // Auto-off on lock, sleep, or UAC: the keyboard focus is gone,
+                // so leaving mouse mode on would arm plain keys behind the
+                // lock screen. The toggle key re-enters the mode afterwards.
+                mouse_mode_.store(false, std::memory_order_relaxed);
+                mouse_toggle_down_.store(false, std::memory_order_relaxed);
+                auto_click_toggle_down_.store(false, std::memory_order_relaxed);
+            }
             release_all();
             continue;
         }
@@ -162,13 +265,16 @@ size_t Engine::pump() {
             continue;
         }
 
+        Router& active_router = mouse_mode_.load(std::memory_order_relaxed)
+            ? mouse_router_
+            : router_;
         if (event.kind == QueuedEvent::Kind::KeyDown) {
-            const RouteResult result = router_.on_key_down(event.key, event.mods);
+            const RouteResult result = active_router.on_key_down(event.key, event.mods);
             if (result.action != Action::None && result.changed) {
                 handle_action(result.action, result.active);
             }
         } else {
-            const RouteResult result = router_.on_key_up(event.key);
+            const RouteResult result = active_router.on_key_up(event.key);
             if (result.action != Action::None && result.changed) {
                 handle_action(result.action, result.active);
             }
@@ -199,6 +305,19 @@ void Engine::apply_pending_config() {
     motion_.configure(motion_config_);
     scroll_lines_per_second_ = snapshot->scroll_lines_per_second;
     router_.set_bindings(snapshot->bindings, snapshot->fn_layer_key);
+    mouse_router_.set_bindings(snapshot->mouse_bindings, snapshot->fn_layer_key);
+
+    scheduler_.configure(snapshot->auto_click_tasks, now_ms());
+    if (!auto_click_initialized_) {
+        auto_click_enabled_.store(snapshot->auto_click_enabled,
+                                  std::memory_order_relaxed);
+        auto_click_initialized_ = true;
+    }
+    scheduler_.set_enabled(auto_click_enabled_.load(std::memory_order_relaxed));
+    auto_click_next_due_ms_.store(
+        scheduler_.enabled() ? scheduler_.next_due_ms() : -1,
+        std::memory_order_relaxed);
+
     release_all();
 }
 
@@ -355,6 +474,13 @@ int Engine::tick(double dt_seconds) {
 
     int injected = 0;
 
+    // Keep the scheduler's master switch in sync with the atomic that the UI
+    // and the hotkey write.
+    const bool auto_enabled = auto_click_enabled_.load(std::memory_order_relaxed);
+    if (scheduler_.enabled() != auto_enabled) {
+        scheduler_.set_enabled(auto_enabled);
+    }
+
     MotionInput input;
     input.up = move_up_.load(std::memory_order_relaxed);
     input.down = move_down_.load(std::memory_order_relaxed);
@@ -365,10 +491,42 @@ int Engine::tick(double dt_seconds) {
 
     const MotionDelta delta = motion_.step(input, dt_seconds);
     if (delta.dx != 0 || delta.dy != 0) {
-        backend_.move(delta.dx, delta.dy);
+        bool moved = false;
+        if (motion_config_.method == MotionMethod::Absolute) {
+            int32_t x = 0;
+            int32_t y = 0;
+            int32_t left = 0;
+            int32_t top = 0;
+            int32_t right = 0;
+            int32_t bottom = 0;
+            if (backend_.cursor_position(x, y) &&
+                backend_.screen_bounds(left, top, right, bottom) &&
+                right > left && bottom > top) {
+                const int32_t nx = std::clamp<int32_t>(x + delta.dx, left, right - 1);
+                const int32_t ny = std::clamp<int32_t>(y + delta.dy, top, bottom - 1);
+                backend_.move_to(nx, ny);
+                moved = true;
+            }
+        }
+        if (!moved) {
+            backend_.move(delta.dx, delta.dy);
+        }
         bump(counters_.injected_moves);
         ++injected;
     }
+
+    // Scheduled clicks run on the same monotonic clock as the rest of the
+    // engine. poll() returns at most one action so two due tasks do not overlap.
+    const int64_t now = now_ms();
+    if (const auto action = scheduler_.poll(
+            now, foreground_hash_.load(std::memory_order_relaxed))) {
+        fire_auto_click(*action);
+        auto_click_fires_.fetch_add(1, std::memory_order_relaxed);
+        ++injected;
+    }
+    auto_click_next_due_ms_.store(
+        scheduler_.enabled() ? scheduler_.next_due_ms() : -1,
+        std::memory_order_relaxed);
 
     // Continuous scrolling, using the same accumulator pattern as motion so
     // slow scroll speeds do not stutter.
@@ -402,13 +560,30 @@ int Engine::tick(double dt_seconds) {
     return injected;
 }
 
-void Engine::release_all() {
-    const auto released = router_.release_all();
-    for (Action action : released) {
-        if (action == Action::DragLock) {
-            apply_drag_lock(false);
+void Engine::fire_auto_click(AutoClickAction action) {
+    const auto click = [this](MouseButton button, int count) {
+        for (int i = 0; i < count; ++i) {
+            backend_.button(button, true);
+            backend_.button(button, false);
         }
+        counters_.injected_buttons.fetch_add(static_cast<uint64_t>(count),
+                                             std::memory_order_relaxed);
+    };
+
+    switch (action) {
+        case AutoClickAction::ClickLeft: click(MouseButton::Left, 1); break;
+        case AutoClickAction::ClickRight: click(MouseButton::Right, 1); break;
+        case AutoClickAction::ClickMiddle: click(MouseButton::Middle, 1); break;
+        case AutoClickAction::DoubleClick: click(MouseButton::Left, 2); break;
     }
+}
+
+void Engine::release_all() {
+    router_.release_all();
+    mouse_router_.release_all();
+    // Unconditionally drop a drag lock if one is engaged. The helper is a
+    // no-op when the lock is already off.
+    apply_drag_lock(false);
 
     move_up_.store(false);
     move_down_.store(false);
@@ -447,6 +622,62 @@ std::optional<double> Engine::consume_speed_change() {
         return std::nullopt;
     }
     return speed;
+}
+
+void Engine::set_capture_mode(bool capturing) {
+    const bool was = capture_mode_.exchange(capturing, std::memory_order_relaxed);
+    if (!capturing || was) {
+        return;
+    }
+
+    // The recorder consumes the next key-up, so a toggle that is being held
+    // right now will never see its release. Forget the physical state; in hold
+    // mode the mode itself must also end, or plain keys would stay armed for
+    // the rest of the session.
+    forget_toggle_states();
+    if (mouse_hold_.load(std::memory_order_relaxed) &&
+        mouse_mode_.exchange(false, std::memory_order_relaxed)) {
+        release_requested_.store(true, std::memory_order_relaxed);
+    }
+}
+
+void Engine::set_mouse_mode(bool on) {
+    const bool was = mouse_mode_.exchange(on, std::memory_order_relaxed);
+    if (was == on) {
+        return;
+    }
+    // The engine thread releases any held key; a toggle during a held "I"
+    // must not keep the cursor moving.
+    release_requested_.store(true, std::memory_order_relaxed);
+    if (mouse_beep_.load(std::memory_order_relaxed)) {
+        beep_requested_.store(true, std::memory_order_relaxed);
+    }
+}
+
+void Engine::forget_toggle_states() {
+    mouse_toggle_down_.store(false, std::memory_order_relaxed);
+    auto_click_toggle_down_.store(false, std::memory_order_relaxed);
+}
+
+void Engine::set_auto_click_enabled(bool on) {
+    auto_click_enabled_.store(on, std::memory_order_relaxed);
+}
+
+int64_t Engine::auto_click_remaining_ms() const {
+    if (!auto_click_enabled_.load(std::memory_order_relaxed)) {
+        return -1;
+    }
+    const int64_t due = auto_click_next_due_ms_.load(std::memory_order_relaxed);
+    if (due < 0) {
+        return -1;
+    }
+    const int64_t now = now_ms();
+    return due > now ? due - now : 0;
+}
+
+void Engine::set_foreground_exe(std::string_view exe) {
+    foreground_hash_.store(AutoClickScheduler::hash_executable(exe),
+                           std::memory_order_relaxed);
 }
 
 }  // namespace km

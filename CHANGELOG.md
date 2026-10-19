@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-19
+
+Adds the first batch of KalMouse-spec features: a plain-key mouse mode, a
+scheduled auto-click system, profile exchange, and finer motion control. The
+existing chord system and configuration path are unchanged.
+
+### Added
+
+- **Mouse mode**, a second binding table that uses plain keys with no Ctrl, Alt,
+  or Fn layer. Defaults: `I`/`K`/`J`/`L` movement, `U`/`O`/`P` left, right, and
+  middle click, `Y`/`H` scroll, `F`/`G` precision and turbo, `Space` drag lock.
+- Mouse-mode toggle on `Ctrl+Alt+M`, selectable toggle or hold behaviour, an
+  optional beep, an optional "start enabled" preference, dashboard and tray
+  status, and automatic disarm when the session locks.
+- **Scheduled auto-click** with a master switch on `Ctrl+Alt+T`, multiple tasks,
+  left/right/middle/double-click actions, intervals from one second to seven
+  days, a first-click delay, a repeat limit, optional foreground-application
+  filtering, and a per-task "run missed clicks" choice. Countdown and total
+  clicks are shown in the dashboard.
+- **Profile import and export** as JSON, with validation, unique naming on
+  import, and the existing duplicate-chord and reserved-hotkey warnings extended
+  to the mouse-mode table.
+- **Absolute movement** (`SetCursorPos`) as an alternative to relative
+  `SendInput`, plus an adjustable acceleration maximum and curve.
+- New Mouse mode and Auto-click tabs, status counters, and translations in all
+  four bundled languages.
+- 130 unit tests, including scheduler timing and injection, mouse-mode routing, configuration
+  migration, and profile exchange.
+
+### Changed
+
+- Configuration schema bumped to 2. Schema-1 files migrate automatically; the
+  new acceleration fields default to 1.0 so the old fixed-speed feel is
+  preserved.
+- The dashboard starts centred at a size that fits the monitor's work area and
+  DPI scale, instead of a fixed 980×700 that could extend past the taskbar.
+- Tab content scrolls inside a fixed body while the header and tab bar stay
+  visible.
+
+### Fixed
+
+- A key-up that matched a toggle key's base key was swallowed even when the
+  key-down was not, which could leave the letter stuck in the foreground
+  application.
+- Re-enabling an auto-click task now starts a fresh countdown; previously the
+  task stayed dormant because its disabled deadline survived the reload.
+- The auto-click duration unit selector kept reverting to seconds because its
+  read and write used different ImGui state ids.
+- Profile import and export dialogs are owned by the dashboard, so they no
+  longer open behind it.
+- The mouse-mode and auto-click hotkeys accept a fresh press after a lock or
+  unlock, even when Windows dropped the matching key-up.
+- Initial UI scaling now follows the window's DPI instead of always using 100%.
+
+### Notes
+
+- Mouse mode is off on upgrade by default; turn it on from the dashboard, the
+  tray menu, or `Ctrl+Alt+M`.
+- Macro recording, playback, editing, and the macro library are planned for
+  0.3.0.
+
 ## [0.1.0] - 2026-10-19
 
 First release. Windows 10 and later, x64, no administrator rights required.
@@ -61,5 +122,6 @@ First release. Windows 10 and later, x64, no administrator rights required.
 - Media keys (play, volume, and the like) cannot be bound: Dear ImGui 1.93 has
   no key identifiers for them. Their normal functions are unaffected.
 
-[Unreleased]: https://github.com/thewoldaa/keymouse/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thewoldaa/keymouse/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thewoldaa/keymouse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/thewoldaa/keymouse/releases/tag/v0.1.0

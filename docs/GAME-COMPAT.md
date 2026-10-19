@@ -30,6 +30,15 @@ Some games call `RegisterRawInputDevices` with `RIDEV_NOLEGACY` and then read
 `RAWINPUT` directly. Whether injected motion reaches them depends on the game.
 There is no general fix; the game decides.
 
+### Absolute movement and raw input
+
+Mouse mode uses the same motion path as the normal bindings. If the relative
+`SendInput` path is not seen by a game, switch **Motion method** to `absolute`:
+that uses `SetCursorPos`, which bypasses pointer acceleration and may work where
+relative events do not. The trade-off is the reverse — some raw-input games only
+read relative deltas and ignore absolute cursor placement. Try both and keep the
+one the game responds to.
+
 ### Elevated games
 
 A non-elevated KeyMouse cannot inject into an elevated process because of UIPI.

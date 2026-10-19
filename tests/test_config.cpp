@@ -181,3 +181,129 @@ TEST_CASE("chord_in_use finds bindings across profiles") {
     CHECK(config.chord_in_use(Chord{ModNone, key::ArrowUp}));
     CHECK_FALSE(config.chord_in_use(Chord{ModNone, key::F24}));
 }
+
+TEST_CASE("mouse mode and auto-click survive a json roundtrip") {
+    AppConfig original = make_default_config();
+    original.mouse_mode.start_enabled = true;
+    original.mouse_mode.hold_to_activate = true;
+    original.mouse_mode.beep = false;
+    original.mouse_mode.toggle_key = Chord{ModCtrl | ModShift, key::KeyM};
+    original.mouse_mode.bindings.push_back(
+        Binding{Action::ClickRight, Chord{ModNone, key::KeyO}, BindMode::Tap,
+                SwallowMode::Swallow});
+
+    original.auto_click.enabled = true;
+    original.auto_click.toggle_key = Chord{ModNone, key::KeyT};
+    AutoClickTask task;
+    task.id = "raid";
+    task.name = "Raid clicker";
+    task.action = AutoClickAction::DoubleClick;
+    task.interval_seconds = 12.5;
+    task.start_delay_seconds = 3.0;
+    task.repeat_count = 40;
+    task.run_missed_once = true;
+    task.only_if_app = "game.exe";
+    original.auto_click.tasks = {task};
+
+    std::string error;
+    const auto parsed = from_json(to_json(original), error);
+    REQUIRE_MESSAGE(parsed.has_value(), error);
+
+    CHECK(parsed->mouse_mode.start_enabled);
+    CHECK(parsed->mouse_mode.hold_to_activate);
+    CHECK_FALSE(parsed->mouse_mode.beep);
+    CHECK(parsed->mouse_mode.toggle_key.mods == (ModCtrl | ModShift));
+    CHECK(parsed->mouse_mode.bindings.size() == original.mouse_mode.bindings.size());
+    CHECK(parsed->mouse_mode.bindings.back().action == Action::ClickRight);
+
+    CHECK(parsed->auto_click.enabled);
+    CHECK(parsed->auto_click.toggle_key.key == key::KeyT);
+    REQUIRE(parsed->auto_click.tasks.size() == 1);
+    const AutoClickTask& restored = parsed->auto_click.tasks[0];
+    CHECK(restored.id == "raid");
+    CHECK(restored.name == "Raid clicker");
+    CHECK(restored.action == AutoClickAction::DoubleClick);
+    CHECK(restored.interval_seconds == doctest::Approx(12.5));
+    CHECK(restored.start_delay_seconds == doctest::Approx(3.0));
+    CHECK(restored.repeat_count == 40);
+    CHECK(restored.run_missed_once);
+    CHECK(restored.only_if_app == "game.exe");
+}
+
+TEST_CASE("schema 1 configs migrate without changing the speed feel") {
+    std::string error;
+    const auto parsed = from_json(R"({
+        "schema": 1,
+        "locale": "en",
+        "motion": {
+            "speed_px_s": 800.0,
+            "accel_ms": 120.0
+        }
+    })", error);
+    REQUIRE_MESSAGE(parsed.has_value(), error);
+
+    CHECK(parsed->schema == kConfigSchemaVersion);
+    CHECK(parsed->motion.accel_max == doctest::Approx(1.0));
+    CHECK(parsed->motion.accel_curve == doctest::Approx(1.0));
+    // The mode did not exist in schema 1, so it arrives switched off but with
+    // a usable default key table.
+    CHECK_FALSE(parsed->mouse_mode.start_enabled);
+    CHECK_FALSE(parsed->mouse_mode.bindings.empty());
+    CHECK_FALSE(parsed->auto_click.enabled);
+}
+
+TEST_CASE("sanitize repairs mouse mode and auto-click values") {
+    AppConfig config = make_default_config();
+    Binding broken;
+    broken.action = Action::MoveUp;  // invalid chord
+    config.mouse_mode.bindings.push_back(broken);
+    config.mouse_mode.toggle_key = Chord{};
+    config.auto_click.toggle_key = Chord{};
+
+    AutoClickTask task;
+    task.interval_seconds = 0.1;
+    task.start_delay_seconds = -30.0;
+    task.repeat_count = -5;
+    config.auto_click.tasks = {task};
+
+    sanitize(config);
+
+    for (const auto& binding : config.mouse_mode.bindings) {
+        CHECK(binding.valid());
+    }
+    CHECK(config.mouse_mode.toggle_key == Chord{ModCtrl | ModAlt, key::KeyM});
+    CHECK(config.auto_click.toggle_key == Chord{ModCtrl | ModAlt, key::KeyT});
+    REQUIRE(config.auto_click.tasks.size() == 1);
+    CHECK(config.auto_click.tasks[0].id == "task-1");
+    CHECK(config.auto_click.tasks[0].name == "Task 1");
+    CHECK(config.auto_click.tasks[0].interval_seconds ==
+          doctest::Approx(kMinAutoClickIntervalSeconds));
+    CHECK(config.auto_click.tasks[0].start_delay_seconds == doctest::Approx(0.0));
+    CHECK(config.auto_click.tasks[0].repeat_count == 0);
+}
+
+TEST_CASE("validate catches control keys used inside mouse mode") {
+    AppConfig config = make_default_config();
+    config.mouse_mode.bindings.push_back(
+        Binding{Action::ClickLeft, config.mouse_mode.toggle_key, BindMode::Tap,
+                SwallowMode::Swallow});
+
+    const auto problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("toggle key") != std::string::npos;
+    }));
+}
+
+TEST_CASE("validate catches duplicate auto-click task ids") {
+    AppConfig config = make_default_config();
+    AutoClickTask task;
+    task.id = "same";
+    task.name = "One";
+    task.interval_seconds = 10.0;
+    config.auto_click.tasks = {task, task};
+
+    const auto problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("id 'same'") != std::string::npos;
+    }));
+}

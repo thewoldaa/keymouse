@@ -70,6 +70,7 @@ private:
 
     void on_command(const std::string& command);
     void poll_foreground();
+    void update_tray_status();
 
 public:
     // The window procedure is a static C callback, so it must be reachable
@@ -113,7 +114,9 @@ private:
     bool initialized_ = false;
     bool first_run_ = false;
     float dpi_scale_ = 1.0f;
+    bool last_mouse_mode_ = false;
 
+    std::string foreground_exe_;
     std::chrono::steady_clock::time_point last_foreground_poll_{};
 };
 

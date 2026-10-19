@@ -89,3 +89,54 @@ TEST_CASE("apply_preset preserves the profile name and exe match") {
     CHECK(config.profiles[0].name == "MyProfile");
     CHECK(config.profiles[0].match_exe == "game.exe");
 }
+
+TEST_CASE("profile exchange roundtrips names, matches, and bindings") {
+    AppConfig config = make_default_config();
+    config.profiles[0].name = "Desktop";
+    config.profiles[0].match_exe = "explorer.exe";
+
+    Profile game;
+    game.name = "Game";
+    game.match_exe = "game.exe";
+    game.bindings.push_back(
+        Binding{Action::MoveUp, Chord{ModCtrl | ModAlt, key::ArrowUp}, BindMode::Hold,
+                SwallowMode::PassThrough});
+    config.profiles.push_back(game);
+
+    std::string error;
+    const auto imported = profiles_from_json(profiles_to_json(config.profiles), error);
+    REQUIRE_MESSAGE(imported.has_value(), error);
+    REQUIRE(imported->size() == 2);
+
+    CHECK((*imported)[0].name == "Desktop");
+    CHECK((*imported)[0].match_exe == "explorer.exe");
+    CHECK((*imported)[1].name == "Game");
+    CHECK((*imported)[1].match_exe == "game.exe");
+    REQUIRE((*imported)[1].bindings.size() == 1);
+    CHECK((*imported)[1].bindings[0].action == Action::MoveUp);
+    CHECK((*imported)[1].bindings[0].chord.mods == (ModCtrl | ModAlt));
+    CHECK((*imported)[1].bindings[0].swallow == SwallowMode::PassThrough);
+}
+
+TEST_CASE("profile import rejects unrelated and malformed files") {
+    std::string error;
+    CHECK_FALSE(profiles_from_json(R"({"profiles": []})", error).has_value());
+    CHECK_FALSE(error.empty());
+
+    error.clear();
+    CHECK_FALSE(profiles_from_json(R"({"format": "other", "profiles": []})", error)
+                    .has_value());
+    CHECK_FALSE(error.empty());
+
+    error.clear();
+    CHECK_FALSE(profiles_from_json("{ not json", error).has_value());
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("profile import rejects an empty profile list") {
+    std::string error;
+    const auto imported = profiles_from_json(
+        R"({"format": "keymouse-profiles", "version": 1, "profiles": []})", error);
+    CHECK_FALSE(imported.has_value());
+    CHECK_FALSE(error.empty());
+}

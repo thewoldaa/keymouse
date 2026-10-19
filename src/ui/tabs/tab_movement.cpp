@@ -29,11 +29,41 @@ void draw_movement_tab(DashboardContext& context) {
     if (widgets::slider_row(tr, tr.tr("movement.accel").data(), &accel,
                             static_cast<float>(MotionConfig::kMinAccel),
                             static_cast<float>(MotionConfig::kMaxAccel),
-                            "%.0f ms", 120.0f)) {
+                            "%.0f ms", 600.0f)) {
         motion.accel_ms = accel;
         changed = true;
     }
+
+    float accel_max = static_cast<float>(motion.accel_max);
+    if (widgets::slider_row(tr, tr.tr("movement.accel_max").data(), &accel_max,
+                            static_cast<float>(MotionConfig::kMinAccelMax),
+                            static_cast<float>(MotionConfig::kMaxAccelMax),
+                            "%.1fx", 3.0f)) {
+        motion.accel_max = accel_max;
+        changed = true;
+    }
+
+    float curve = static_cast<float>(motion.accel_curve);
+    if (widgets::slider_row(tr, tr.tr("movement.accel_curve").data(), &curve,
+                            static_cast<float>(MotionConfig::kMinCurve),
+                            static_cast<float>(MotionConfig::kMaxCurve),
+                            "%.2f", 1.5f)) {
+        motion.accel_curve = curve;
+        changed = true;
+    }
     ImGui::TextDisabled("%s", tr.tr("movement.accel_hint").data());
+
+    widgets::section(tr.tr("movement.section.method").data());
+
+    int method = static_cast<int>(motion.method);
+    const char* methods[] = {tr.tr("movement.method.relative").data(),
+                             tr.tr("movement.method.absolute").data()};
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::Combo(tr.tr("movement.method").data(), &method, methods, 2)) {
+        motion.method = static_cast<MotionMethod>(method);
+        changed = true;
+    }
+    ImGui::TextDisabled("%s", tr.tr("movement.method_hint").data());
 
     widgets::section(tr.tr("movement.section.modifiers").data());
 
@@ -68,15 +98,23 @@ void draw_movement_tab(DashboardContext& context) {
 
     widgets::section(tr.tr("movement.section.preview").data());
 
-    // Effective speed readout. Shows what the current settings actually do,
-    // including precision and turbo, which is more useful than three separate
+    // Effective speed readout at the start and at the end of the ramp, so the
+    // effect of every slider is visible instead of being three abstract
     // numbers.
-    const double base = motion.speed_px_s;
-    ImGui::Text("%s: %.0f px/s", tr.tr("movement.base_speed").data(), base);
+    const MotionInput plain{};
+    MotionInput precision_input;
+    precision_input.precision = true;
+    MotionInput turbo_input;
+    turbo_input.turbo = true;
+
+    ImGui::Text("%s: %.0f px/s", tr.tr("movement.base_speed").data(),
+                Motion::speed_at(motion, plain, 0.0));
+    ImGui::Text("%s: %.0f px/s", tr.tr("movement.max_speed").data(),
+                Motion::speed_at(motion, plain, motion.accel_ms));
     ImGui::Text("%s: %.0f px/s", tr.tr("movement.precision_speed").data(),
-                base * motion.precision_mult);
+                Motion::speed_at(motion, precision_input, motion.accel_ms));
     ImGui::Text("%s: %.0f px/s", tr.tr("movement.turbo_speed").data(),
-                base * motion.turbo_mult);
+                Motion::speed_at(motion, turbo_input, motion.accel_ms));
 
     ImGui::Spacing();
     ImGui::TextDisabled("%s", tr.tr("movement.speed_keys_hint").data());

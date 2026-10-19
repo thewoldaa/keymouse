@@ -126,6 +126,29 @@ public:
         SendInput(1, &input, sizeof(INPUT));
     }
 
+    void move_to(int32_t x, int32_t y) override {
+        SetCursorPos(x, y);
+    }
+
+    bool cursor_position(int32_t& x, int32_t& y) override {
+        POINT point{};
+        if (!GetCursorPos(&point)) {
+            return false;
+        }
+        x = point.x;
+        y = point.y;
+        return true;
+    }
+
+    bool screen_bounds(int32_t& left, int32_t& top, int32_t& right,
+                       int32_t& bottom) override {
+        left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        right = left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        bottom = top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return right > left && bottom > top;
+    }
+
     uint64_t dropped_events() const override { return dropped_.load(); }
     const char* name() const override { return "Win32 low-level hook"; }
 

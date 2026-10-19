@@ -12,7 +12,12 @@ It is built for two groups:
 - **People who cannot comfortably use a mouse**, for whom keyboard-only cursor
   control is an accessibility requirement rather than a convenience.
 
+[![CI](https://github.com/thewoldaa/keymouse/actions/workflows/ci.yml/badge.svg)](https://github.com/thewoldaa/keymouse/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/thewoldaa/keymouse?display_name=tag)](https://github.com/thewoldaa/keymouse/releases/latest)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey.svg)](#requirements)
+
+**Download:** [installer or portable zip](https://github.com/thewoldaa/keymouse/releases/latest).
 
 ## Status
 

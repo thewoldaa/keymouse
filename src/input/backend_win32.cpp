@@ -8,7 +8,9 @@
 #include <windows.h>
 
 #include "core/chord.h"
+#include "input/injection.h"
 #include "input/keycodes_win32.h"
+#include "platform/timer.h"
 
 namespace km {
 namespace {
@@ -88,6 +90,7 @@ public:
         input.mi.dx = dx;
         input.mi.dy = dy;
         input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        input.mi.dwExtraInfo = injection_extra();
         SendInput(1, &input, sizeof(INPUT));
     }
 
@@ -111,6 +114,7 @@ public:
                 input.mi.mouseData = button == MouseButton::X1 ? XBUTTON1 : XBUTTON2;
                 break;
         }
+        input.mi.dwExtraInfo = injection_extra();
         SendInput(1, &input, sizeof(INPUT));
     }
 
@@ -123,8 +127,30 @@ public:
             input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
         }
         input.mi.mouseData = static_cast<DWORD>(delta);
+        input.mi.dwExtraInfo = injection_extra();
         SendInput(1, &input, sizeof(INPUT));
     }
+
+    void key(KeyId target, bool down) override {
+        const win32::KeyTranslation translation = win32::to_scan_code(target);
+        if (translation.key == key::Invalid) {
+            return;
+        }
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = static_cast<WORD>(translation.scan);
+        input.ki.dwFlags = KEYEVENTF_SCANCODE;
+        if (translation.extended) {
+            input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        if (!down) {
+            input.ki.dwFlags |= KEYEVENTF_KEYUP;
+        }
+        input.ki.dwExtraInfo = injection_extra();
+        SendInput(1, &input, sizeof(INPUT));
+    }
+
+    void set_injection_tag(bool tagged) override { tag_injections_ = tagged; }
 
     void move_to(int32_t x, int32_t y) override {
         SetCursorPos(x, y);
@@ -150,6 +176,12 @@ public:
     }
 
     uint64_t dropped_events() const override { return dropped_.load(); }
+
+    ULONG_PTR injection_extra() const {
+        return tag_injections_ ? static_cast<ULONG_PTR>(kInjectionTag) : 0;
+    }
+
+    bool tag_injections_ = false;
     const char* name() const override { return "Win32 low-level hook"; }
 
     // Called from the hook callback.
@@ -209,11 +241,14 @@ private:
 
         const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
 
-        // Note: injected keystrokes are deliberately NOT filtered out. This
-        // application only ever injects mouse input, so no keystroke can
-        // re-enter the hook and loop; and filtering them would make bindings
-        // ignore anything produced by a remapper, a macro pad, or the on-screen
-        // keyboard, which reads as "KeyMouse randomly stops working".
+        // KeyMouse's own injected keyboard events (macro playback, keyboard
+        // steps) carry a tag and are passed straight through: interpreting them
+        // would let a macro fire bindings or record itself. Third-party
+        // injected keystrokes are still interpreted on purpose, so a remapper,
+        // a macro pad, or the on-screen keyboard keeps working.
+        if (info->dwExtraInfo == kInjectionTag) {
+            return CallNextHookEx(nullptr, code, wparam, lparam);
+        }
 
         // Ctrl+Alt+Del and friends are delivered on the secure desktop and are
         // never routed through this hook, but Win+L and similar are. Let the
@@ -248,6 +283,8 @@ private:
         if (backend->fn_held() && translated.key != backend->fn_layer_key()) {
             event.mods |= ModFn;
         }
+        event.extra_info = info->dwExtraInfo;
+        event.time_us = platform::monotonic_us();
 
         const bool swallow = backend->dispatch(event);
         if (swallow) {

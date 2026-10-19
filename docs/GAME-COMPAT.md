@@ -51,6 +51,15 @@ means the dashboard runs elevated, which is a larger trust surface.
   on it in a competitive match.
 - **Use `pass` swallow mode** if the game also needs the key. Movement keys
   bound with `swallow` will not reach the game.
+- **Record macros at the resolution and window position you intend to replay
+  them in.** Steps store absolute screen coordinates, so a moved window or a
+  different display mode makes the recording land somewhere else.
+- **Keep the real mouse still during playback.** Moving it pauses the macro so
+  you can take over; that is deliberate, but it also means a knock against the
+  desk interrupts a long recording.
+- **Macro playback is the same injection as live control.** A game that ignores
+  `SendInput` or `SetCursorPos` ignores a recording too. Some anti-cheat
+  additionally treats repeated, perfectly timed input as automation.
 - **Bind chords the game does not use.** `Ctrl + Alt + Arrow` is a common choice
   precisely because games rarely claim it.
 - **Do not use this to gain an unfair advantage in competitive multiplayer.**

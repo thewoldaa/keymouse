@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "input/injection.h"
+
 namespace km {
 namespace {
 
@@ -29,6 +31,17 @@ std::shared_ptr<const EngineConfig> make_engine_config(const AppConfig& config) 
     out->auto_click_toggle_key = config.auto_click.toggle_key;
     out->auto_click_tasks = config.auto_click.tasks;
     out->auto_click_enabled = config.auto_click.enabled;
+    out->macro_record_keyboard = config.macros.record_keyboard;
+    out->macro_move_tolerance_px = config.macros.move_tolerance_px;
+    out->macro_record_key = config.macros.record_key;
+    out->macro_play_key = config.macros.play_key;
+    out->macro_stop_key = config.macros.stop_key;
+    for (const MacroEntry& entry : config.macros.entries) {
+        if (entry.hotkey.valid()) {
+            out->macro_hotkeys.push_back(
+                MacroHotkeyTable::Entry{entry.hotkey, entry.id});
+        }
+    }
     if (!config.profiles.empty()) {
         const size_t index = config.active_profile < config.profiles.size()
             ? config.active_profile
@@ -40,7 +53,10 @@ std::shared_ptr<const EngineConfig> make_engine_config(const AppConfig& config) 
 
 }  // namespace
 
-Engine::Engine(InputBackend& backend) : backend_(backend) {
+Engine::Engine(InputBackend& backend, Clock clock) : backend_(backend) {
+    if (clock) {
+        clock_ = std::move(clock);
+    }
     motion_.configure(motion_config_);
 }
 
@@ -67,6 +83,16 @@ void Engine::apply_config(const AppConfig& config) {
                                  std::memory_order_relaxed);
     auto_click_toggle_mods_.store(snapshot->auto_click_toggle_key.mods,
                                   std::memory_order_relaxed);
+
+    macro_record_key_.store(snapshot->macro_record_key.key, std::memory_order_relaxed);
+    macro_record_mods_.store(snapshot->macro_record_key.mods, std::memory_order_relaxed);
+    macro_play_key_.store(snapshot->macro_play_key.key, std::memory_order_relaxed);
+    macro_play_mods_.store(snapshot->macro_play_key.mods, std::memory_order_relaxed);
+    macro_stop_key_.store(snapshot->macro_stop_key.key, std::memory_order_relaxed);
+    macro_stop_mods_.store(snapshot->macro_stop_key.mods, std::memory_order_relaxed);
+    macro_tolerance_px_.store(snapshot->macro_move_tolerance_px,
+                              std::memory_order_relaxed);
+    macro_hotkey_store_.publish(snapshot->macro_hotkeys);
 
     enabled_.store(config.enabled, std::memory_order_relaxed);
 
@@ -101,6 +127,19 @@ bool Engine::on_input_event(const InputEvent& event) {
         // untouched, including chords that are already bound, otherwise a
         // binding could never be recorded twice.
         return false;
+    }
+
+    if (event.extra_info == kInjectionTag) {
+        // An event injected by the macro player. The platform hooks already
+        // skip these; the check keeps the engine honest for backends that
+        // forward them anyway.
+        return false;
+    }
+
+    // Break stops macro playback no matter what state the engine is in. It
+    // stays usable as the panic key below.
+    if (event.key == key::Pause && event.type == InputEvent::Type::KeyDown) {
+        macro_stop_requested_.store(true, std::memory_order_relaxed);
     }
 
     // The panic key works even while the engine is disabled: it is the way back
@@ -170,6 +209,82 @@ bool Engine::on_input_event(const InputEvent& event) {
         }
     }
 
+    // Macro record/play/stop. One-shot chords with the same swallow pattern as
+    // the mode toggles: only the release of a press that was consumed is
+    // swallowed, so a plain "R" never loses its key-up.
+    if (event.key == macro_record_key_.load(std::memory_order_relaxed)) {
+        if (is_down && event.mods == macro_record_mods_.load(std::memory_order_relaxed)) {
+            if (!macro_record_down_.exchange(true, std::memory_order_relaxed)) {
+                macro_record_toggle_requested_.store(true, std::memory_order_relaxed);
+            }
+            return true;
+        }
+        if (is_up && macro_record_down_.exchange(false, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
+    if (event.key == macro_play_key_.load(std::memory_order_relaxed)) {
+        if (is_down && event.mods == macro_play_mods_.load(std::memory_order_relaxed)) {
+            if (!macro_play_down_.exchange(true, std::memory_order_relaxed)) {
+                macro_play_pause_requested_.store(true, std::memory_order_relaxed);
+            }
+            return true;
+        }
+        if (is_up && macro_play_down_.exchange(false, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
+    if (event.key == macro_stop_key_.load(std::memory_order_relaxed)) {
+        if (is_down && event.mods == macro_stop_mods_.load(std::memory_order_relaxed)) {
+            if (!macro_stop_down_.exchange(true, std::memory_order_relaxed)) {
+                macro_stop_requested_.store(true, std::memory_order_relaxed);
+            }
+            return true;
+        }
+        if (is_up && macro_stop_down_.exchange(false, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
+    // Per-macro hotkeys. The table is immutable and published by apply_config();
+    // the hook thread only records which entry fired and the UI thread resolves
+    // the id from the retained table.
+    if (is_down) {
+        const MacroHotkeyTable* table = macro_hotkey_store_.current();
+        size_t index = 0;
+        if (table != nullptr && table->find(event.mods, event.key, index)) {
+            if (macro_hotkey_key_.exchange(event.key, std::memory_order_relaxed) ==
+                key::Invalid) {
+                macro_hotkey_table_seen_.store(table, std::memory_order_release);
+                macro_hotkey_index_.store(index, std::memory_order_relaxed);
+                macro_hotkey_requested_.store(true, std::memory_order_relaxed);
+            }
+            return true;
+        }
+    } else if (is_up &&
+               event.key == macro_hotkey_key_.load(std::memory_order_relaxed)) {
+        macro_hotkey_key_.store(key::Invalid, std::memory_order_relaxed);
+        return true;
+    }
+
+    // Keyboard capture runs alongside normal routing: the keys still reach the
+    // foreground application, they are only also written into the recording.
+    if ((is_down || is_up) &&
+        recording_active_.load(std::memory_order_relaxed) &&
+        recording_keyboard_.load(std::memory_order_relaxed)) {
+        MacroInputEvent recorded;
+        recorded.type = is_down ? MacroInputEvent::Type::KeyDown
+                                : MacroInputEvent::Type::KeyUp;
+        recorded.time_us = event.time_us;
+        recorded.key = event.key;
+        recorded.injected = false;
+        if (!macro_key_ring_.push(recorded)) {
+            bump(counters_.dropped_events);
+        }
+    }
+
     QueuedEvent queued;
 
     switch (event.type) {
@@ -236,9 +351,17 @@ bool Engine::on_input_event(const InputEvent& event) {
 size_t Engine::pump() {
     apply_pending_config();
 
+    const int64_t now_us = clock_();
+
     if (release_requested_.exchange(false, std::memory_order_relaxed)) {
         release_all();
     }
+
+    // The rings are drained before the requests are applied so a stop request
+    // still records the events that arrived just before it; otherwise the tail
+    // of every recording would be cut off.
+    drain_macro_events(now_us);
+    apply_macro_requests(now_us);
 
     size_t processed = 0;
     QueuedEvent event;
@@ -256,6 +379,10 @@ size_t Engine::pump() {
                 mouse_mode_.store(false, std::memory_order_relaxed);
                 mouse_toggle_down_.store(false, std::memory_order_relaxed);
                 auto_click_toggle_down_.store(false, std::memory_order_relaxed);
+                macro_record_down_.store(false, std::memory_order_relaxed);
+                macro_play_down_.store(false, std::memory_order_relaxed);
+                macro_stop_down_.store(false, std::memory_order_relaxed);
+                macro_hotkey_key_.store(key::Invalid, std::memory_order_relaxed);
             }
             release_all();
             continue;
@@ -280,6 +407,8 @@ size_t Engine::pump() {
             }
         }
     }
+
+    publish_player_status();
 
     return processed;
 }
@@ -464,6 +593,13 @@ void Engine::refresh_active_mask() {
 }
 
 int Engine::tick(double dt_seconds) {
+    // Macro playback sits in front of the master switch: turning the engine off
+    // with the panic key stops input handling, and the panic path stops the
+    // player explicitly, but starting a macro from the dashboard must not
+    // silently freeze when the switch happens to be off.
+    player_.tick(clock_());
+    publish_player_status();
+
     if (!enabled_.load(std::memory_order_relaxed) || dt_seconds <= 0.0) {
         return 0;
     }
@@ -581,6 +717,8 @@ void Engine::fire_auto_click(AutoClickAction action) {
 void Engine::release_all() {
     router_.release_all();
     mouse_router_.release_all();
+    // A halted player must never leave a button or key held down.
+    player_.stop();
     // Unconditionally drop a drag lock if one is engaged. The helper is a
     // no-op when the lock is already off.
     apply_drag_lock(false);
@@ -657,6 +795,10 @@ void Engine::set_mouse_mode(bool on) {
 void Engine::forget_toggle_states() {
     mouse_toggle_down_.store(false, std::memory_order_relaxed);
     auto_click_toggle_down_.store(false, std::memory_order_relaxed);
+    macro_record_down_.store(false, std::memory_order_relaxed);
+    macro_play_down_.store(false, std::memory_order_relaxed);
+    macro_stop_down_.store(false, std::memory_order_relaxed);
+    macro_hotkey_key_.store(key::Invalid, std::memory_order_relaxed);
 }
 
 void Engine::set_auto_click_enabled(bool on) {
@@ -678,6 +820,152 @@ int64_t Engine::auto_click_remaining_ms() const {
 void Engine::set_foreground_exe(std::string_view exe) {
     foreground_hash_.store(AutoClickScheduler::hash_executable(exe),
                            std::memory_order_relaxed);
+}
+
+void Engine::start_macro_recording(bool record_keyboard) {
+    recording_keyboard_.store(record_keyboard, std::memory_order_relaxed);
+    record_start_requested_.store(true, std::memory_order_relaxed);
+}
+
+void Engine::stop_macro_recording() {
+    record_stop_requested_.store(true, std::memory_order_relaxed);
+}
+
+bool Engine::consume_recorded_macro(Macro& out) {
+    if (!recorded_macro_ready_.exchange(false, std::memory_order_relaxed)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(recorded_macro_mutex_);
+    if (!recorded_macro_) {
+        return false;
+    }
+    out = std::move(*recorded_macro_);
+    recorded_macro_.reset();
+    return true;
+}
+
+void Engine::play_macro(std::shared_ptr<const Macro> macro,
+                        const MacroPlaybackOptions& options) {
+    {
+        std::lock_guard<std::mutex> lock(playback_mutex_);
+        pending_macro_ = std::move(macro);
+        pending_options_ = options;
+    }
+    playback_pending_.store(true, std::memory_order_release);
+}
+
+bool Engine::consume_macro_hotkey(std::string& id) {
+    if (!macro_hotkey_requested_.exchange(false, std::memory_order_relaxed)) {
+        return false;
+    }
+    const MacroHotkeyTable* table =
+        macro_hotkey_table_seen_.load(std::memory_order_acquire);
+    const size_t index = macro_hotkey_index_.load(std::memory_order_relaxed);
+    if (table == nullptr || index >= table->size()) {
+        return false;
+    }
+    id = table->entry(index).id;
+    return true;
+}
+
+void Engine::on_mouse_event(const MacroInputEvent& event) {
+    if (!macro_mouse_ring_.push(event)) {
+        bump(counters_.dropped_events);
+    }
+}
+
+void Engine::apply_macro_requests(int64_t now_us) {
+    if (record_start_requested_.exchange(false, std::memory_order_relaxed)) {
+        if (!recorder_.active()) {
+            int32_t left = 0;
+            int32_t top = 0;
+            int32_t right = 0;
+            int32_t bottom = 0;
+            int32_t width = 0;
+            int32_t height = 0;
+            if (backend_.screen_bounds(left, top, right, bottom)) {
+                width = right - left;
+                height = bottom - top;
+            }
+            recorder_.start(recording_keyboard_.load(std::memory_order_relaxed),
+                            macro_tolerance_px_.load(std::memory_order_relaxed),
+                            width, height);
+            recording_active_.store(true, std::memory_order_relaxed);
+            recording_steps_.store(0, std::memory_order_relaxed);
+        }
+    }
+
+    if (record_stop_requested_.exchange(false, std::memory_order_relaxed)) {
+        if (recorder_.active()) {
+            Macro macro = recorder_.finish({}, {});
+            {
+                std::lock_guard<std::mutex> lock(recorded_macro_mutex_);
+                recorded_macro_ = std::move(macro);
+            }
+            recorded_macro_ready_.store(true, std::memory_order_relaxed);
+        }
+        recording_active_.store(false, std::memory_order_relaxed);
+    }
+
+    if (macro_stop_requested_.exchange(false, std::memory_order_relaxed)) {
+        player_.stop();
+    }
+    if (player_pause_requested_.exchange(false, std::memory_order_relaxed)) {
+        player_.pause(now_us);
+    }
+    if (player_resume_requested_.exchange(false, std::memory_order_relaxed)) {
+        player_.resume(now_us);
+    }
+
+    if (playback_pending_.exchange(false, std::memory_order_acquire)) {
+        std::shared_ptr<const Macro> macro;
+        MacroPlaybackOptions options;
+        {
+            std::lock_guard<std::mutex> lock(playback_mutex_);
+            macro = std::move(pending_macro_);
+            options = pending_options_;
+        }
+        if (macro) {
+            player_.start(macro, options, now_us);
+        }
+    }
+}
+
+void Engine::drain_macro_events(int64_t now_us) {
+    const bool recording = recording_active_.load(std::memory_order_relaxed);
+
+    MacroInputEvent event;
+    while (macro_mouse_ring_.pop(event)) {
+        if (recording) {
+            recorder_.add(event);
+        } else if (!event.injected &&
+                   player_.state() == MacroPlayerState::Playing) {
+            // Physical mouse activity always wins over a playing macro. The
+            // player's own events carry the KeyMouse tag, so this only fires on
+            // the real mouse. A button release is not activity: the release of
+            // the very click that pressed Play lands after playback has started,
+            // and pausing on it would stop every mouse-started macro instantly.
+            if (event.type != MacroInputEvent::Type::ButtonUp) {
+                player_.pause(now_us);
+            }
+        }
+    }
+    while (macro_key_ring_.pop(event)) {
+        if (recording) {
+            recorder_.add(event);
+        }
+    }
+
+    if (recording) {
+        recording_steps_.store(recorder_.step_count(), std::memory_order_relaxed);
+    }
+}
+
+void Engine::publish_player_status() {
+    player_state_.store(player_.state(), std::memory_order_relaxed);
+    player_step_.store(player_.current_step(), std::memory_order_relaxed);
+    player_steps_.store(player_.steps_executed(), std::memory_order_relaxed);
+    player_loops_.store(player_.loops_completed(), std::memory_order_relaxed);
 }
 
 }  // namespace km

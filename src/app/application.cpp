@@ -17,12 +17,15 @@
 #include <wtsapi32.h>
 
 #include "app/single_instance.h"
+#include "core/macro_store.h"
 #include "core/profiles.h"
 #include "core/version.h"
 #include "input/backend_win32.h"
 #include "platform/beep.h"
 #include "platform/dpi.h"
+#include "platform/file_dialog.h"
 #include "platform/locale.h"
+#include "platform/mouse_hook.h"
 #include "platform/paths.h"
 #include "platform/screen.h"
 #include "platform/startup.h"
@@ -134,6 +137,14 @@ int Application::run(int argc, wchar_t** argv) {
 
         apply_pending_requests();
         poll_foreground();
+        sync_macro_mouse_hook();
+
+        // A macro edited in the dashboard is written back once per iteration,
+        // never per keystroke.
+        if (dashboard_.macro_edit.dirty) {
+            dashboard_.macro_edit.dirty = false;
+            save_macro_edit();
+        }
 
         // Persist at most once per iteration, never per widget edit.
         if (config_dirty_) {
@@ -281,6 +292,42 @@ bool Application::initialize(int argc, wchar_t** argv) {
     dashboard_.request_locale_reload = &request_locale_reload_;
     dashboard_.request_open_config = &request_open_config_;
 
+    // Macro commands. The tab never touches files or the engine's playback
+    // state directly; everything goes through the application.
+    dashboard_.macro_toggle_record = [this] { toggle_macro_recording(); };
+    dashboard_.macro_play = [this] { play_loaded_macro(false); };
+    dashboard_.macro_play_from_step = [this] { play_loaded_macro(true); };
+    dashboard_.macro_pause = [this] {
+        if (engine_) {
+            engine_->request_macro_pause();
+        }
+    };
+    dashboard_.macro_resume = [this] {
+        if (engine_) {
+            engine_->request_macro_resume();
+        }
+    };
+    dashboard_.macro_stop = [this] {
+        if (engine_) {
+            engine_->request_macro_stop();
+        }
+    };
+    dashboard_.macro_select = [this](const std::string& id) { load_macro_into_editor(id); };
+    dashboard_.macro_new = [this] { new_macro(); };
+    dashboard_.macro_duplicate = [this](const std::string& id) { duplicate_macro(id); };
+    dashboard_.macro_delete = [this](const std::string& id) { delete_macro(id); };
+    dashboard_.macro_import = [this] { import_macro(); };
+    dashboard_.macro_export = [this](const std::string& id) { export_macro(id); };
+    dashboard_.macro_set_hotkey = [this](const std::string& id, const Chord& chord) {
+        set_macro_hotkey(id, chord);
+    };
+
+    // Open the first macro so Play and the playback hotkey work without a
+    // detour through the library.
+    if (!config_.macros.entries.empty()) {
+        load_macro_into_editor(config_.macros.entries.front().id);
+    }
+
     engine_stop_.store(false);
     engine_thread_ = std::thread([this] { engine_thread_main(); });
 
@@ -307,6 +354,10 @@ void Application::shutdown() {
     if (engine_thread_.joinable()) {
         engine_thread_.join();
     }
+
+    // The mouse hook feeds the engine, so it must be gone before the engine is
+    // released.
+    platform::stop_mouse_hook();
 
     // The engine thread is gone, so the engine's state is ours to touch again.
     if (engine_) {
@@ -556,6 +607,10 @@ void Application::render_frame() {
             draw_tab_body("auto_click_body", [&] { ui::draw_auto_click_tab(dashboard_); });
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem(i18n_.tr("tab.macros").data())) {
+            draw_tab_body("macros_body", [&] { ui::draw_macros_tab(dashboard_); });
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem(i18n_.tr("tab.profiles").data())) {
             draw_tab_body("profiles_body", [&] { ui::draw_profiles_tab(dashboard_); });
             ImGui::EndTabItem();
@@ -726,7 +781,12 @@ void Application::on_session_event(session::SessionEvent event) {
                 engine_->forget_toggle_states();
                 engine_->consume_beep_request();
                 engine_->request_release();
+                // A macro recording or playing across a lock would capture the
+                // lock screen or keep clicking behind it.
+                engine_->request_macro_stop();
+                engine_->stop_macro_recording();
             }
+            platform::stop_mouse_hook();
             break;
 
         case session::SessionEvent::Unlocked:
@@ -845,6 +905,24 @@ void Application::sync_from_engine() {
     if (engine_->consume_dashboard_request()) {
         show_dashboard();
     }
+
+    // ---- Macro requests ----------------------------------------------------
+    // The record, play/pause, and stop chords are handled on the hook thread;
+    // the file I/O they imply happens here, on the UI thread.
+    if (engine_->consume_macro_record_toggle()) {
+        toggle_macro_recording();
+    }
+    if (engine_->consume_macro_play_pause()) {
+        toggle_macro_playback();
+    }
+    std::string macro_hotkey;
+    if (engine_->consume_macro_hotkey(macro_hotkey)) {
+        play_macro_by_id(macro_hotkey);
+    }
+    Macro recorded;
+    if (engine_->consume_recorded_macro(recorded)) {
+        store_finished_recording(std::move(recorded));
+    }
 }
 
 void Application::apply_pending_requests() {
@@ -880,6 +958,382 @@ void Application::open_config_folder() {
     // render loop. The failure cases (no association, blocked by policy) leave
     // the user with the path shown in the diagnostics tab.
     ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// ---------------------------------------------------------------------------
+// Macros
+// ---------------------------------------------------------------------------
+
+std::filesystem::path Application::macro_dir() const {
+    return paths::data_dir() / "macros";
+}
+
+std::string Application::unique_macro_id(std::string_view display) const {
+    std::vector<std::string> taken;
+    taken.reserve(config_.macros.entries.size());
+    for (const MacroEntry& entry : config_.macros.entries) {
+        taken.push_back(entry.id);
+    }
+    return macro_store::unique_id(macro_dir(), display, taken);
+}
+
+std::string Application::next_macro_name() const {
+    const std::string base = std::string(i18n_.tr("macro.new_name").data());
+    int number = static_cast<int>(config_.macros.entries.size()) + 1;
+    for (;;) {
+        const std::string candidate =
+            number == 1 ? base : base + " " + std::to_string(number);
+        bool used = false;
+        for (const MacroEntry& entry : config_.macros.entries) {
+            if (entry.name == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            return candidate;
+        }
+        ++number;
+    }
+}
+
+void Application::toggle_macro_recording() {
+    if (!engine_) {
+        return;
+    }
+    if (engine_->macro_recording()) {
+        engine_->stop_macro_recording();
+    } else {
+        // Recording and playback do not mix; whatever was playing stops first.
+        engine_->request_macro_stop();
+        engine_->start_macro_recording(config_.macros.record_keyboard);
+    }
+    platform::beep();
+    sync_macro_mouse_hook();
+}
+
+void Application::toggle_macro_playback() {
+    if (!engine_) {
+        return;
+    }
+    switch (engine_->macro_player_state()) {
+        case MacroPlayerState::Playing:
+            engine_->request_macro_pause();
+            return;
+        case MacroPlayerState::Paused:
+            engine_->request_macro_resume();
+            return;
+        case MacroPlayerState::Idle:
+            break;
+    }
+    play_loaded_macro(false);
+}
+
+void Application::play_loaded_macro(bool from_selected) {
+    if (!engine_) {
+        return;
+    }
+    if (!dashboard_.macro_edit.loaded) {
+        if (config_.macros.entries.empty()) {
+            return;
+        }
+        load_macro_into_editor(config_.macros.entries.front().id);
+        if (!dashboard_.macro_edit.loaded) {
+            return;
+        }
+    }
+    if (dashboard_.macro_edit.macro.steps.empty()) {
+        return;
+    }
+
+    // The player gets its own copy: editing the macro while it plays must not
+    // reach into the step list that is being executed.
+    auto macro = std::make_shared<Macro>(dashboard_.macro_edit.macro);
+    MacroPlaybackOptions options = dashboard_.macro_options;
+    if (from_selected && dashboard_.macro_edit.selected_step > 0) {
+        options.start_step = static_cast<size_t>(dashboard_.macro_edit.selected_step);
+    }
+    engine_->play_macro(std::move(macro), options);
+    sync_macro_mouse_hook();
+}
+
+void Application::play_macro_by_id(const std::string& id) {
+    if (!engine_) {
+        return;
+    }
+    std::string error;
+    auto macro = macro_store::load(macro_dir(), id, error);
+    if (!macro || macro->steps.empty()) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.load_failed").data());
+        return;
+    }
+    // Show the macro that the hotkey started, so Pause and Stop act on it.
+    load_macro_into_editor(id);
+
+    auto shared = std::make_shared<Macro>(std::move(*macro));
+    engine_->play_macro(std::move(shared), dashboard_.macro_options);
+    sync_macro_mouse_hook();
+}
+
+void Application::load_macro_into_editor(const std::string& id) {
+    if (dashboard_.macro_edit.loaded && dashboard_.macro_edit.macro.id == id) {
+        return;
+    }
+    if (dashboard_.macro_edit.dirty) {
+        dashboard_.macro_edit.dirty = false;
+        save_macro_edit();
+    }
+
+    std::string error;
+    auto macro = macro_store::load(macro_dir(), id, error);
+    if (!macro) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.load_failed").data());
+        return;
+    }
+    macro->id = id;
+    dashboard_.macro_edit.macro = std::move(*macro);
+    dashboard_.macro_edit.loaded = true;
+    dashboard_.macro_edit.selected_step = -1;
+    dashboard_.macro_edit.dirty = false;
+    dashboard_.macro_message.clear();
+}
+
+void Application::save_macro_edit() {
+    if (!dashboard_.macro_edit.loaded) {
+        return;
+    }
+    Macro& macro = dashboard_.macro_edit.macro;
+    std::string error;
+    if (!macro_store::save(macro_dir(), macro, error)) {
+        dashboard_.macro_message = error;
+        return;
+    }
+    for (MacroEntry& entry : config_.macros.entries) {
+        if (entry.id == macro.id && entry.name != macro.name) {
+            entry.name = macro.name;
+            config_dirty_ = true;
+        }
+    }
+}
+
+void Application::store_finished_recording(Macro macro) {
+    macro.name = next_macro_name();
+    macro.id = unique_macro_id(macro.name);
+
+    std::string error;
+    if (!macro_store::save(macro_dir(), macro, error)) {
+        dashboard_.macro_message = error;
+        return;
+    }
+
+    MacroEntry entry;
+    entry.id = macro.id;
+    entry.name = macro.name;
+    config_.macros.entries.push_back(entry);
+    config_dirty_ = true;
+
+    dashboard_.macro_edit.macro = std::move(macro);
+    dashboard_.macro_edit.loaded = true;
+    dashboard_.macro_edit.selected_step = -1;
+    dashboard_.macro_edit.dirty = false;
+    dashboard_.macro_message.clear();
+}
+
+void Application::new_macro() {
+    Macro macro;
+    macro.name = next_macro_name();
+    macro.id = unique_macro_id(macro.name);
+
+    std::string error;
+    if (!macro_store::save(macro_dir(), macro, error)) {
+        dashboard_.macro_message = error;
+        return;
+    }
+
+    MacroEntry entry;
+    entry.id = macro.id;
+    entry.name = macro.name;
+    config_.macros.entries.push_back(entry);
+    config_dirty_ = true;
+
+    dashboard_.macro_edit.macro = std::move(macro);
+    dashboard_.macro_edit.loaded = true;
+    dashboard_.macro_edit.selected_step = -1;
+    dashboard_.macro_edit.dirty = false;
+    dashboard_.macro_message.clear();
+}
+
+void Application::duplicate_macro(const std::string& id) {
+    Macro copy;
+    if (dashboard_.macro_edit.loaded && dashboard_.macro_edit.macro.id == id) {
+        copy = dashboard_.macro_edit.macro;
+    } else {
+        std::string error;
+        const auto loaded = macro_store::load(macro_dir(), id, error);
+        if (!loaded) {
+            dashboard_.macro_message = std::string(i18n_.tr("macro.load_failed").data());
+            return;
+        }
+        copy = *loaded;
+    }
+
+    copy.name += std::string(i18n_.tr("macro.copy_suffix").data());
+    copy.id = unique_macro_id(copy.name);
+
+    std::string error;
+    if (!macro_store::save(macro_dir(), copy, error)) {
+        dashboard_.macro_message = error;
+        return;
+    }
+
+    MacroEntry entry;
+    entry.id = copy.id;
+    entry.name = copy.name;
+    config_.macros.entries.push_back(entry);
+    config_dirty_ = true;
+
+    dashboard_.macro_edit.macro = std::move(copy);
+    dashboard_.macro_edit.loaded = true;
+    dashboard_.macro_edit.selected_step = -1;
+    dashboard_.macro_edit.dirty = false;
+    dashboard_.macro_message.clear();
+}
+
+void Application::delete_macro(const std::string& id) {
+    macro_store::remove_file(macro_dir(), id);
+    config_.macros.entries.erase(
+        std::remove_if(config_.macros.entries.begin(), config_.macros.entries.end(),
+                       [&id](const MacroEntry& entry) { return entry.id == id; }),
+        config_.macros.entries.end());
+    config_dirty_ = true;
+
+    if (dashboard_.macro_edit.loaded && dashboard_.macro_edit.macro.id == id) {
+        // Everything the editor showed is gone; the next selection reloads it.
+        dashboard_.macro_edit.macro = Macro{};
+        dashboard_.macro_edit.loaded = false;
+        dashboard_.macro_edit.selected_step = -1;
+        dashboard_.macro_edit.dirty = false;
+    }
+    dashboard_.macro_message = std::string(i18n_.tr("macro.deleted").data());
+}
+
+void Application::import_macro() {
+    static constexpr wchar_t kFilter[] =
+        L"KeyMouse macros (*.kmacro)\0*.kmacro\0All files (*.*)\0*.*\0";
+
+    const auto picked = platform::open_file_dialog(L"Import macro", kFilter);
+    if (!picked) {
+        return;
+    }
+
+    std::ifstream stream(*picked, std::ios::binary);
+    if (!stream) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.import_failed").data());
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+
+    std::string error;
+    auto parsed = macro_from_json(text, error);
+    if (!parsed) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.import_failed").data());
+        return;
+    }
+
+    Macro macro = std::move(*parsed);
+    if (macro.name.empty()) {
+        macro.name = picked->stem().string();
+    }
+    macro.id = unique_macro_id(macro.name);
+
+    if (!macro_store::save(macro_dir(), macro, error)) {
+        dashboard_.macro_message = error;
+        return;
+    }
+
+    MacroEntry entry;
+    entry.id = macro.id;
+    entry.name = macro.name;
+    config_.macros.entries.push_back(entry);
+    config_dirty_ = true;
+
+    dashboard_.macro_edit.macro = std::move(macro);
+    dashboard_.macro_edit.loaded = true;
+    dashboard_.macro_edit.selected_step = -1;
+    dashboard_.macro_edit.dirty = false;
+    dashboard_.macro_message = std::string(i18n_.tr("macro.imported").data());
+}
+
+void Application::export_macro(const std::string& id) {
+    static constexpr wchar_t kFilter[] =
+        L"KeyMouse macros (*.kmacro)\0*.kmacro\0All files (*.*)\0*.*\0";
+
+    Macro macro;
+    if (dashboard_.macro_edit.loaded && dashboard_.macro_edit.macro.id == id) {
+        macro = dashboard_.macro_edit.macro;
+    } else {
+        std::string error;
+        const auto loaded = macro_store::load(macro_dir(), id, error);
+        if (!loaded) {
+            dashboard_.macro_message = std::string(i18n_.tr("macro.load_failed").data());
+            return;
+        }
+        macro = *loaded;
+    }
+
+    // The id is sanitized ASCII, so widening it is safe.
+    const std::wstring default_name(id.begin(), id.end());
+    const auto target = platform::save_file_dialog(
+        L"Export macro", kFilter, (default_name + L".kmacro").c_str());
+    if (!target) {
+        return;
+    }
+
+    std::ofstream stream(*target, std::ios::binary | std::ios::trunc);
+    if (stream) {
+        const std::string text = macro_to_json(macro);
+        stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+        stream.flush();
+    }
+    if (!stream) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.export_failed").data());
+        return;
+    }
+    dashboard_.macro_message = std::string(i18n_.tr("macro.exported").data());
+}
+
+void Application::set_macro_hotkey(const std::string& id, const Chord& chord) {
+    for (MacroEntry& entry : config_.macros.entries) {
+        if (entry.id != id) {
+            continue;
+        }
+        if (entry.hotkey == chord) {
+            return;
+        }
+        entry.hotkey = chord;
+        config_dirty_ = true;
+        return;
+    }
+}
+
+void Application::sync_macro_mouse_hook() {
+    if (!engine_) {
+        return;
+    }
+    const bool wanted = engine_->macro_wants_mouse_hook();
+    if (wanted && !platform::mouse_hook_running()) {
+        platform::start_mouse_hook(&Application::mouse_event_callback);
+    } else if (!wanted && platform::mouse_hook_running()) {
+        platform::stop_mouse_hook();
+    }
+}
+
+void Application::mouse_event_callback(const MacroInputEvent& event) {
+    // Hook thread. The engine only pushes to a lock-free ring.
+    if (g_app && g_app->engine_) {
+        g_app->engine_->on_mouse_event(event);
+    }
 }
 
 void Application::on_command(const std::string& command) {

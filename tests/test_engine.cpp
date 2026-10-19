@@ -2,11 +2,13 @@
 #include "test_common.h"
 
 #include <chrono>
+#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "core/engine.h"
+#include "input/injection.h"
 
 using namespace km;
 
@@ -30,6 +32,12 @@ public:
         buttons.emplace_back(button, down);
     }
     void scroll(Axis, int32_t) override { ++scrolls; }
+
+    void key(KeyId target, bool down) override {
+        keys.emplace_back(target, down);
+        key_while_tagged = tagged_injections;
+    }
+    void set_injection_tag(bool tagged) override { tagged_injections = tagged; }
 
     void move_to(int32_t x, int32_t y) override {
         ++absolute_moves;
@@ -62,6 +70,9 @@ public:
     int32_t last_x = 0;
     int32_t last_y = 0;
     std::vector<std::pair<MouseButton, bool>> buttons;
+    std::vector<std::pair<KeyId, bool>> keys;
+    bool tagged_injections = false;
+    bool key_while_tagged = false;
 };
 
 InputEvent event(InputEvent::Type type, KeyId key, uint8_t mods = ModNone) {
@@ -328,4 +339,397 @@ TEST_CASE("scheduled auto-click fires through the backend") {
 
     // The task had a repeat count of one, so no next deadline remains.
     CHECK(engine.auto_click_remaining_ms() == -1);
+}
+
+namespace {
+
+MacroStep macro_step(MacroStepType type, int64_t dt_ms, int32_t data = 0,
+                     KeyId key = key::Invalid) {
+    MacroStep step;
+    step.type = type;
+    step.dt_ms = dt_ms;
+    step.data = data;
+    step.key = key;
+    return step;
+}
+
+MacroInputEvent mouse_event(MacroInputEvent::Type type, int64_t time_us, int32_t x,
+                            int32_t y) {
+    MacroInputEvent event;
+    event.type = type;
+    event.time_us = time_us;
+    event.x = x;
+    event.y = y;
+    return event;
+}
+
+}  // namespace
+
+TEST_CASE("recording turns mouse events into a macro") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+
+    AppConfig config = make_default_config();
+    config.macros.move_tolerance_px = 2.0;
+    config.macros.record_keyboard = false;
+    engine.apply_config(config);
+    engine.pump();
+
+    engine.start_macro_recording(false);
+    engine.pump();
+    CHECK(engine.macro_recording());
+    CHECK(engine.macro_wants_mouse_hook());
+
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 1000, 10, 10));
+    // One pixel away: inside the tolerance circle, dropped.
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 2000, 11, 10));
+    // Thirty pixels away: kept, and it carries the accumulated delay.
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 6000, 40, 10));
+
+    MacroInputEvent down;
+    down.type = MacroInputEvent::Type::ButtonDown;
+    down.time_us = 10000;
+    down.data = static_cast<int32_t>(MouseButton::Left);
+    engine.on_mouse_event(down);
+
+    // Playback output never lands in a recording.
+    MacroInputEvent injected = mouse_event(MacroInputEvent::Type::MouseMove, 12000, 500, 500);
+    injected.injected = true;
+    engine.on_mouse_event(injected);
+
+    engine.pump();
+    CHECK(engine.macro_recording_steps() == 3);
+
+    engine.stop_macro_recording();
+    engine.pump();
+    CHECK_FALSE(engine.macro_recording());
+    CHECK_FALSE(engine.macro_wants_mouse_hook());
+
+    Macro recorded;
+    REQUIRE(engine.consume_recorded_macro(recorded));
+    REQUIRE(recorded.steps.size() == 3);
+    CHECK(recorded.recorded_width == 1920);
+    CHECK(recorded.recorded_height == 1080);
+    CHECK(recorded.steps[0].type == MacroStepType::Move);
+    CHECK(recorded.steps[0].dt_ms == 0);
+    CHECK(recorded.steps[0].x == 10);
+    CHECK(recorded.steps[1].type == MacroStepType::Move);
+    CHECK(recorded.steps[1].dt_ms == 5);
+    CHECK(recorded.steps[1].x == 40);
+    CHECK(recorded.steps[2].type == MacroStepType::ButtonDown);
+    CHECK(recorded.steps[2].dt_ms == 4);
+    CHECK(recorded.steps[2].data == static_cast<int32_t>(MouseButton::Left));
+
+    // The finished macro is handed out exactly once.
+    Macro again;
+    CHECK_FALSE(engine.consume_recorded_macro(again));
+}
+
+TEST_CASE("keyboard capture only records keys when it is on") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.macros.record_keyboard = true;
+    engine.apply_config(config);
+    engine.pump();
+
+    engine.start_macro_recording(true);
+    engine.pump();
+
+    InputEvent down = event(InputEvent::Type::KeyDown, key::KeyW);
+    down.time_us = 5000;
+    CHECK_FALSE(engine.on_input_event(down));
+    InputEvent up = event(InputEvent::Type::KeyUp, key::KeyW);
+    up.time_us = 9000;
+    CHECK_FALSE(engine.on_input_event(up));
+
+    engine.stop_macro_recording();
+    engine.pump();
+
+    Macro recorded;
+    REQUIRE(engine.consume_recorded_macro(recorded));
+    REQUIRE(recorded.steps.size() == 2);
+    CHECK(recorded.steps[0].type == MacroStepType::KeyDown);
+    CHECK(recorded.steps[0].key == key::KeyW);
+    CHECK(recorded.steps[1].type == MacroStepType::KeyUp);
+    CHECK(recorded.steps[1].dt_ms == 4);
+}
+
+TEST_CASE("playback pauses, resumes, and finishes on its own clock") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+    engine.apply_config(make_default_config());
+    engine.pump();
+
+    auto macro = std::make_shared<Macro>();
+    MacroStep move = macro_step(MacroStepType::Move, 0);
+    move.x = 100;
+    move.y = 200;
+    macro->steps = {
+        move,
+        macro_step(MacroStepType::ButtonDown, 10,
+                   static_cast<int32_t>(MouseButton::Left)),
+        macro_step(MacroStepType::ButtonUp, 10,
+                   static_cast<int32_t>(MouseButton::Left)),
+    };
+
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+    CHECK(engine.macro_wants_mouse_hook());
+
+    engine.tick(0.01);
+    CHECK(backend.absolute_moves == 1);
+    CHECK(backend.last_x == 100);
+    CHECK(backend.last_y == 200);
+    CHECK(engine.macro_player_step() == 1);
+
+    clock = 10000;
+    engine.tick(0.01);
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].second);
+
+    // Pause with a button still held: the player lets go so a long pause does
+    // not leave the desktop stuck in a drag.
+    engine.request_macro_pause();
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Paused);
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+
+    // Ticks while paused execute nothing.
+    clock = 90000;
+    engine.tick(0.01);
+    CHECK(backend.buttons.size() == 2);
+
+    engine.request_macro_resume();
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+    REQUIRE(backend.buttons.size() == 3);
+    CHECK(backend.buttons[2].second);
+
+    // The remaining delay of the pending step is kept across the pause.
+    clock = 99999;
+    engine.tick(0.01);
+    CHECK(backend.buttons.size() == 3);
+    clock = 100000;
+    engine.tick(0.01);
+    REQUIRE(backend.buttons.size() == 4);
+    CHECK_FALSE(backend.buttons[3].second);
+    CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
+    CHECK(engine.macro_player_loops() == 1);
+    CHECK_FALSE(engine.macro_wants_mouse_hook());
+}
+
+TEST_CASE("the player tags its injections and releases held input on stop") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+    engine.apply_config(make_default_config());
+    engine.pump();
+
+    auto macro = std::make_shared<Macro>();
+    macro->steps = {
+        macro_step(MacroStepType::KeyDown, 0, 0, key::KeyW),
+        macro_step(MacroStepType::ButtonDown, 0,
+                   static_cast<int32_t>(MouseButton::Left)),
+        macro_step(MacroStepType::Wait, 60000),
+    };
+
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+
+    clock = 5000;
+    engine.tick(0.01);
+    REQUIRE(backend.keys.size() == 1);
+    CHECK(backend.keys[0].second);
+    CHECK(backend.key_while_tagged);
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].second);
+
+    engine.request_macro_stop();
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
+    // Both are released, and the tag is off again afterwards.
+    REQUIRE(backend.keys.size() == 2);
+    CHECK_FALSE(backend.keys[1].second);
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK_FALSE(backend.tagged_injections);
+}
+
+TEST_CASE("a real mouse event pauses playback but an injected one does not") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+    engine.apply_config(make_default_config());
+    engine.pump();
+
+    auto macro = std::make_shared<Macro>();
+    macro->steps = {macro_step(MacroStepType::Wait, 60000)};
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    MacroInputEvent injected = mouse_event(MacroInputEvent::Type::MouseMove, 1000, 10, 10);
+    injected.injected = true;
+    engine.on_mouse_event(injected);
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 2000, 500, 400));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Paused);
+    CHECK(engine.macro_wants_mouse_hook());
+
+    // A manual resume continues from the pause point.
+    engine.request_macro_resume();
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    // The release of the click that pressed Play arrives after playback has
+    // started; it is not activity and must not pause the macro.
+    MacroInputEvent release;
+    release.type = MacroInputEvent::Type::ButtonUp;
+    release.time_us = 3000;
+    release.data = static_cast<int32_t>(MouseButton::Left);
+    engine.on_mouse_event(release);
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    // The press does.
+    MacroInputEvent press;
+    press.type = MacroInputEvent::Type::ButtonDown;
+    press.time_us = 4000;
+    press.data = static_cast<int32_t>(MouseButton::Left);
+    engine.on_mouse_event(press);
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Paused);
+}
+
+TEST_CASE("Break stops playback") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+    engine.apply_config(make_default_config());
+    engine.pump();
+
+    auto macro = std::make_shared<Macro>();
+    macro->steps = {macro_step(MacroStepType::Wait, 60000)};
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    REQUIRE(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+}
+
+TEST_CASE("macro control chords surface as one-shot requests") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+
+    AppConfig config = make_default_config();
+    config.macros.record_key = Chord{ModCtrl | ModAlt, key::KeyR};
+    config.macros.play_key = Chord{ModCtrl | ModAlt, key::KeyP};
+    config.macros.stop_key = Chord{ModCtrl | ModAlt, key::KeyS};
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyR, ModCtrl | ModAlt)));
+    CHECK(engine.consume_macro_record_toggle());
+    CHECK_FALSE(engine.consume_macro_record_toggle());
+    // Auto-repeat must not queue a second toggle.
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyR, ModCtrl | ModAlt)));
+    CHECK_FALSE(engine.consume_macro_record_toggle());
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyUp, key::KeyR, ModCtrl | ModAlt)));
+
+    // The plain key keeps its own life.
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyR)));
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyR)));
+
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyP, ModCtrl | ModAlt)));
+    CHECK(engine.consume_macro_play_pause());
+    CHECK_FALSE(engine.consume_macro_play_pause());
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyUp, key::KeyP, ModCtrl | ModAlt)));
+
+    auto macro = std::make_shared<Macro>();
+    macro->steps = {macro_step(MacroStepType::Wait, 60000)};
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    REQUIRE(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyS, ModCtrl | ModAlt)));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyUp, key::KeyS, ModCtrl | ModAlt)));
+}
+
+TEST_CASE("per-macro hotkeys resolve through the published table") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.macros.entries = {
+        MacroEntry{"farm", "Farm", Chord{ModAlt, key::KeyF}},
+        MacroEntry{"trade", "Trade", Chord{ModCtrl | ModShift, key::KeyT}},
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    std::string id;
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF, ModAlt)));
+    REQUIRE(engine.consume_macro_hotkey(id));
+    CHECK(id == "farm");
+    CHECK_FALSE(engine.consume_macro_hotkey(id));
+
+    // Holding the key down does not retrigger it.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF, ModAlt)));
+    CHECK_FALSE(engine.consume_macro_hotkey(id));
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyF, ModAlt)));
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF, ModAlt)));
+    REQUIRE(engine.consume_macro_hotkey(id));
+    CHECK(id == "farm");
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyF, ModAlt)));
+
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyT, ModCtrl | ModShift)));
+    REQUIRE(engine.consume_macro_hotkey(id));
+    CHECK(id == "trade");
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyUp, key::KeyT, ModCtrl | ModShift)));
+
+    // Unbound chords pass through untouched.
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyG)));
+}
+
+TEST_CASE("events tagged as injected are ignored by the engine") {
+    FakeBackend backend;
+    Engine engine(backend);
+    engine.apply_config(make_default_config());
+    engine.pump();
+
+    // Low-level hooks only deliver the low DWORD of dwExtraInfo, so a tag that
+    // needs more than 32 bits would never match.
+    CHECK(kInjectionTag != 0);
+    CHECK(static_cast<uint64_t>(kInjectionTag) <= 0xFFFFFFFFull);
+
+    InputEvent tagged = event(InputEvent::Type::KeyDown, key::KeyW);
+    tagged.extra_info = kInjectionTag;
+    CHECK_FALSE(engine.on_input_event(tagged));
+    CHECK(engine.stats().input_events == 1);
+    CHECK(engine.active_mask() == 0u);
 }

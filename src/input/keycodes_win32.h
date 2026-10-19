@@ -20,6 +20,9 @@ struct KeyTranslation {
     KeyId key = key::Invalid;
     // True for keys that Windows reports with the extended flag set.
     bool extended = false;
+    // Physical scan code. Filled in by both directions so the backend can
+    // inject the same key it observed.
+    uint32_t scan = 0;
 };
 
 // From a low-level hook's KBDLLHOOKSTRUCT.

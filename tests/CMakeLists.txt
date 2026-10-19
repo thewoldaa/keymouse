@@ -29,6 +29,7 @@ add_executable(keymouse_tests
     test_profiles.cpp
     test_scheduler.cpp
     test_engine.cpp
+    test_macro.cpp
     test_ring.cpp
     # cli.cpp is in the application layer rather than in keymouse_core, but it
     # has no Windows dependency, so it can be tested here directly. Parsing

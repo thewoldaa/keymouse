@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/macro.h"
+
 namespace km {
 namespace {
 
@@ -255,6 +257,73 @@ AutoClickConfig auto_click_from_json(const json& value) {
     return out;
 }
 
+json macro_entry_to_json(const MacroEntry& entry) {
+    json item{
+        {"id", entry.id},
+        {"name", entry.name},
+    };
+    if (entry.hotkey.valid()) {
+        item["hotkey"] = chord_to_json(entry.hotkey);
+    }
+    return item;
+}
+
+MacroEntry macro_entry_from_json(const json& value) {
+    MacroEntry entry;
+    if (value.contains("id") && value["id"].is_string()) {
+        entry.id = value["id"].get<std::string>();
+    }
+    if (value.contains("name") && value["name"].is_string()) {
+        entry.name = value["name"].get<std::string>();
+    }
+    if (value.contains("hotkey") && value["hotkey"].is_object()) {
+        entry.hotkey = chord_from_json(value["hotkey"]);
+    }
+    return entry;
+}
+
+json macro_config_to_json(const MacroConfig& macros) {
+    json entries = json::array();
+    for (const auto& entry : macros.entries) {
+        entries.push_back(macro_entry_to_json(entry));
+    }
+    return json{
+        {"entries", entries},
+        {"record_keyboard", macros.record_keyboard},
+        {"move_tolerance_px", macros.move_tolerance_px},
+        {"record_key", chord_to_json(macros.record_key)},
+        {"play_key", chord_to_json(macros.play_key)},
+        {"stop_key", chord_to_json(macros.stop_key)},
+    };
+}
+
+MacroConfig macro_config_from_json(const json& value) {
+    MacroConfig out;
+    if (value.contains("record_keyboard") && value["record_keyboard"].is_boolean()) {
+        out.record_keyboard = value["record_keyboard"].get<bool>();
+    }
+    if (value.contains("move_tolerance_px") && value["move_tolerance_px"].is_number()) {
+        out.move_tolerance_px = value["move_tolerance_px"].get<double>();
+    }
+    if (value.contains("record_key") && value["record_key"].is_object()) {
+        out.record_key = chord_from_json(value["record_key"]);
+    }
+    if (value.contains("play_key") && value["play_key"].is_object()) {
+        out.play_key = chord_from_json(value["play_key"]);
+    }
+    if (value.contains("stop_key") && value["stop_key"].is_object()) {
+        out.stop_key = chord_from_json(value["stop_key"]);
+    }
+    if (value.contains("entries") && value["entries"].is_array()) {
+        for (const auto& item : value["entries"]) {
+            if (item.is_object()) {
+                out.entries.push_back(macro_entry_from_json(item));
+            }
+        }
+    }
+    return out;
+}
+
 Binding make_binding(Action action, ModMask mods, KeyId key,
                      BindMode mode = BindMode::Hold,
                      SwallowMode swallow = SwallowMode::Swallow) {
@@ -323,7 +392,8 @@ bool AppConfig::chord_in_use(const Chord& chord, const std::string& ignore_profi
 
 bool AppConfig::chord_is_reserved(const Chord& chord) const {
     return chord == panic_key || chord == mouse_mode.toggle_key ||
-           chord == auto_click.toggle_key;
+           chord == auto_click.toggle_key || chord == macros.record_key ||
+           chord == macros.play_key || chord == macros.stop_key;
 }
 
 std::vector<Binding> make_mouse_mode_bindings() {
@@ -428,6 +498,7 @@ std::string to_json(const AppConfig& config) {
         {"scroll_lines_per_second", config.scroll_lines_per_second},
         {"mouse_mode", mouse_mode_to_json(config.mouse_mode)},
         {"auto_click", auto_click_to_json(config.auto_click)},
+        {"macros", macro_config_to_json(config.macros)},
         {"active_profile", config.active_profile},
         {"auto_switch_profiles", config.auto_switch_profiles},
         {"profiles", profiles},
@@ -577,6 +648,15 @@ std::optional<AppConfig> from_json(std::string_view text, std::string& error) {
         config.auto_click = auto_click_from_json(root["auto_click"]);
     }
 
+    if (root.contains("macros") && root["macros"].is_object()) {
+        config.macros = macro_config_from_json(root["macros"]);
+        if (config.macros.entries.empty() && loaded_schema < 3) {
+            // Schema 2 and older had no macro library; nothing to migrate. The
+            // empty list is the correct starting point.
+            config.macros.entries.clear();
+        }
+    }
+
     if (root.contains("active_profile") && root["active_profile"].is_number_unsigned()) {
         config.active_profile = root["active_profile"].get<size_t>();
     }
@@ -661,6 +741,42 @@ void sanitize(AppConfig& config) {
         task.repeat_count = std::clamp(task.repeat_count, 0, kMaxAutoClickRepeats);
     }
 
+    config.macros.move_tolerance_px = std::clamp(config.macros.move_tolerance_px,
+        kMinMacroTolerancePx, kMaxMacroTolerancePx);
+    if (!config.macros.record_key.valid()) {
+        config.macros.record_key = Chord{ModCtrl | ModAlt, key::KeyR};
+    }
+    if (!config.macros.play_key.valid()) {
+        config.macros.play_key = Chord{ModCtrl | ModAlt, key::KeyP};
+    }
+    if (!config.macros.stop_key.valid()) {
+        config.macros.stop_key = Chord{ModCtrl | ModAlt, key::KeyS};
+    }
+    {
+        // Ids double as file names, so they are normalized here rather than at
+        // every call site. Duplicates get a numeric suffix.
+        std::unordered_set<std::string> macro_ids;
+        std::vector<MacroEntry> entries;
+        entries.reserve(config.macros.entries.size());
+        for (auto& entry : config.macros.entries) {
+            const std::string base = macro_file_stem(
+                entry.id.empty() ? entry.name : entry.id);
+            std::string id = base;
+            for (int suffix = 2; !macro_ids.insert(id).second; ++suffix) {
+                id = base + '-' + std::to_string(suffix);
+            }
+            entry.id = id;
+            if (entry.name.empty()) {
+                entry.name = entry.id;
+            }
+            if (!entry.hotkey.valid()) {
+                entry.hotkey = Chord{ModNone, key::Invalid};
+            }
+            entries.push_back(std::move(entry));
+        }
+        config.macros.entries = std::move(entries);
+    }
+
     for (auto& profile : config.profiles) {
         profile.bindings.erase(
             std::remove_if(profile.bindings.begin(), profile.bindings.end(),
@@ -695,6 +811,12 @@ std::vector<std::string> validate(const AppConfig& config) {
             if (binding.chord == config.auto_click.toggle_key) {
                 problems.push_back("Profile '" + profile.name + "' binds the auto-click key " +
                     format_chord(config.auto_click.toggle_key));
+            }
+            if (binding.chord == config.macros.record_key ||
+                binding.chord == config.macros.play_key ||
+                binding.chord == config.macros.stop_key) {
+                problems.push_back("Profile '" + profile.name + "' binds the macro key " +
+                    format_chord(binding.chord));
             }
         }
 
@@ -734,6 +856,12 @@ std::vector<std::string> validate(const AppConfig& config) {
             problems.push_back("Mouse mode binds the auto-click key " +
                 format_chord(config.auto_click.toggle_key));
         }
+        if (binding.chord == config.macros.record_key ||
+            binding.chord == config.macros.play_key ||
+            binding.chord == config.macros.stop_key) {
+            problems.push_back("Mouse mode binds the macro key " +
+                format_chord(binding.chord));
+        }
     }
     const bool mouse_has_movement = std::any_of(
         config.mouse_mode.bindings.begin(), config.mouse_mode.bindings.end(),
@@ -753,6 +881,28 @@ std::vector<std::string> validate(const AppConfig& config) {
         problems.push_back("The auto-click key is also the panic key");
     }
 
+    // Macro control keys must be distinct from each other and from every other
+    // always-active key.
+    const Chord macro_keys[] = {config.macros.record_key, config.macros.play_key,
+                                config.macros.stop_key};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = i + 1; j < 3; ++j) {
+            if (macro_keys[i] == macro_keys[j]) {
+                problems.push_back("The macro record, play, and stop keys must be different");
+                i = 3;
+                break;
+            }
+        }
+    }
+    for (const Chord& chord : macro_keys) {
+        if (chord == config.panic_key || chord == config.mouse_mode.toggle_key ||
+            chord == config.auto_click.toggle_key) {
+            problems.push_back("A macro key is already used by another mode key: " +
+                format_chord(chord));
+            break;
+        }
+    }
+
     // Auto-click tasks
     std::unordered_set<std::string> task_ids;
     std::unordered_set<std::string> task_names;
@@ -766,6 +916,33 @@ std::vector<std::string> validate(const AppConfig& config) {
         if (task.interval_seconds < kMinAutoClickIntervalSeconds) {
             problems.push_back("Auto-click task '" + task.name +
                 "' has an interval below one second");
+        }
+    }
+
+    // Macro library
+    std::unordered_set<std::string> macro_ids;
+    std::vector<Chord> macro_hotkeys;
+    for (const auto& entry : config.macros.entries) {
+        if (!macro_ids.insert(entry.id).second) {
+            problems.push_back("Macro id '" + entry.id + "' is used more than once");
+        }
+        if (!entry.hotkey.valid()) {
+            continue;
+        }
+        for (const Chord& other : macro_hotkeys) {
+            if (other == entry.hotkey) {
+                problems.push_back("Macro '" + entry.name + "' reuses the hotkey " +
+                    format_chord(entry.hotkey));
+                break;
+            }
+        }
+        macro_hotkeys.push_back(entry.hotkey);
+        if (config.chord_is_reserved(entry.hotkey)) {
+            problems.push_back("Macro '" + entry.name + "' uses the reserved key " +
+                format_chord(entry.hotkey));
+        } else if (config.chord_in_use(entry.hotkey)) {
+            problems.push_back("Macro '" + entry.name + "' hotkey " +
+                format_chord(entry.hotkey) + " is already bound");
         }
     }
 

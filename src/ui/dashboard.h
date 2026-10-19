@@ -12,6 +12,8 @@
 #include "core/config.h"
 #include "core/engine.h"
 #include "core/i18n.h"
+#include "core/macro.h"
+#include "core/player.h"
 #include "platform/screen.h"
 
 namespace km {
@@ -47,6 +49,37 @@ struct DashboardContext {
     // Set by a tab while a chord recorder is open. The application publishes it
     // to the engine as capture mode.
     bool capture_active = false;
+
+    // ---- Macro tab -------------------------------------------------------
+    // The macro open in the editor. The dashboard owns the copy; the
+    // application writes it back to its .kmacro file when `dirty` is set.
+    struct MacroEditState {
+        Macro macro;
+        bool loaded = false;
+        bool dirty = false;
+        int selected_step = -1;
+    } macro_edit;
+    // Playback options edited in the macro tab and used for hotkey playback.
+    MacroPlaybackOptions macro_options;
+    // Last message from a file operation, shown under the library list.
+    std::string macro_message;
+
+    // Commands implemented by the application: file I/O and the engine calls
+    // that must not happen inside a widget. All of them are optional so the
+    // dashboard still renders when a callback is missing.
+    std::function<void()> macro_toggle_record;
+    std::function<void()> macro_play;
+    std::function<void()> macro_play_from_step;
+    std::function<void()> macro_pause;
+    std::function<void()> macro_resume;
+    std::function<void()> macro_stop;
+    std::function<void(const std::string& id)> macro_select;
+    std::function<void()> macro_new;
+    std::function<void(const std::string& id)> macro_duplicate;
+    std::function<void(const std::string& id)> macro_delete;
+    std::function<void()> macro_import;
+    std::function<void(const std::string& id)> macro_export;
+    std::function<void(const std::string& id, const Chord& chord)> macro_set_hotkey;
 };
 
 // Each tab renders into the current ImGui window.
@@ -55,6 +88,7 @@ void draw_bindings_tab(DashboardContext& context);
 void draw_mouse_mode_tab(DashboardContext& context);
 void draw_movement_tab(DashboardContext& context);
 void draw_auto_click_tab(DashboardContext& context);
+void draw_macros_tab(DashboardContext& context);
 void draw_profiles_tab(DashboardContext& context);
 void draw_general_tab(DashboardContext& context);
 void draw_diagnostics_tab(DashboardContext& context);

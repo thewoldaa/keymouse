@@ -85,5 +85,20 @@ void sleep_for(std::chrono::nanoseconds duration) {
     }
 }
 
+int64_t monotonic_us() {
+    static const int64_t frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return value.QuadPart > 0 ? value.QuadPart : 1;
+    }();
+
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    // Split the division so a long uptime cannot overflow the multiplication.
+    const int64_t seconds = counter.QuadPart / frequency;
+    const int64_t remainder = counter.QuadPart % frequency;
+    return seconds * 1000000 + remainder * 1000000 / frequency;
+}
+
 }  // namespace platform
 }  // namespace km

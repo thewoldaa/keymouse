@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -14,7 +16,11 @@
 #include "core/binding_table.h"
 #include "core/chord.h"
 #include "core/config.h"
+#include "core/macro.h"
+#include "core/macro_hotkeys.h"
 #include "core/motion.h"
+#include "core/player.h"
+#include "core/recorder.h"
 #include "core/router.h"
 #include "core/scheduler.h"
 #include "core/spsc_ring.h"
@@ -69,6 +75,15 @@ struct EngineConfig {
     Chord auto_click_toggle_key{ModCtrl | ModAlt, key::KeyT};
     std::vector<AutoClickTask> auto_click_tasks;
     bool auto_click_enabled = false;
+
+    // Macro recording and playback. The per-macro hotkeys are a flat list
+    // rebuilt from the library on every apply_config().
+    bool macro_record_keyboard = false;
+    double macro_move_tolerance_px = 3.0;
+    Chord macro_record_key{ModCtrl | ModAlt, key::KeyR};
+    Chord macro_play_key{ModCtrl | ModAlt, key::KeyP};
+    Chord macro_stop_key{ModCtrl | ModAlt, key::KeyS};
+    std::vector<MacroHotkeyTable::Entry> macro_hotkeys;
 };
 
 // Converts key events into cursor motion and button presses.
@@ -85,7 +100,10 @@ struct EngineConfig {
 //   * stats() builds a snapshot from atomics and is safe from any thread.
 class Engine {
 public:
-    explicit Engine(InputBackend& backend);
+    // The clock is overridable so tests can drive playback and recording with
+    // a synthetic timeline. Production uses steady_clock.
+    using Clock = std::function<int64_t()>;
+    explicit Engine(InputBackend& backend, Clock clock = {});
     ~Engine();
 
     // Publishes a new configuration.
@@ -185,6 +203,73 @@ public:
     // can persist it. nullopt when nothing changed.
     std::optional<double> consume_speed_change();
 
+    // ---- Macro recording and playback ------------------------------------
+    //
+    // Recording starts and stops on request; the engine thread owns the
+    // recorder and publishes its progress. A finished recording is handed back
+    // with consume_recorded_macro() so the application can name and store it.
+    void start_macro_recording(bool record_keyboard);
+    void stop_macro_recording();
+    bool macro_recording() const {
+        return recording_active_.load(std::memory_order_relaxed);
+    }
+    uint64_t macro_recording_steps() const {
+        return recording_steps_.load(std::memory_order_relaxed);
+    }
+    bool consume_recorded_macro(Macro& out);
+
+    // Playback. play_macro() hands the macro to the engine thread; the
+    // remaining calls are requests applied by the engine thread on its next
+    // pump, so they are safe from any thread including the hook thread.
+    void play_macro(std::shared_ptr<const Macro> macro,
+                    const MacroPlaybackOptions& options);
+    void request_macro_pause() {
+        player_pause_requested_.store(true, std::memory_order_relaxed);
+    }
+    void request_macro_resume() {
+        player_resume_requested_.store(true, std::memory_order_relaxed);
+    }
+    void request_macro_stop() {
+        macro_stop_requested_.store(true, std::memory_order_relaxed);
+    }
+    MacroPlayerState macro_player_state() const {
+        return player_state_.load(std::memory_order_relaxed);
+    }
+    size_t macro_player_step() const {
+        return player_step_.load(std::memory_order_relaxed);
+    }
+    uint64_t macro_player_steps() const {
+        return player_steps_.load(std::memory_order_relaxed);
+    }
+    uint64_t macro_player_loops() const {
+        return player_loops_.load(std::memory_order_relaxed);
+    }
+
+    // Requests produced by the global record/play/stop chords. The application
+    // consumes them on the UI thread, does the file I/O, and calls back into
+    // the API above.
+    bool consume_macro_record_toggle() {
+        return macro_record_toggle_requested_.exchange(false,
+                                                       std::memory_order_relaxed);
+    }
+    bool consume_macro_play_pause() {
+        return macro_play_pause_requested_.exchange(false,
+                                                    std::memory_order_relaxed);
+    }
+    // Id of the macro whose per-macro hotkey fired. False when none did.
+    bool consume_macro_hotkey(std::string& id);
+
+    // Feed one platform mouse event. Called on the mouse hook thread; the
+    // event is queued for the engine thread.
+    void on_mouse_event(const MacroInputEvent& event);
+
+    // True while the platform mouse hook should stay installed.
+    bool macro_wants_mouse_hook() const {
+        return macro_recording() ||
+               player_state_.load(std::memory_order_relaxed) !=
+                   MacroPlayerState::Idle;
+    }
+
 private:
     // Engine thread only.
     void apply_pending_config();
@@ -192,6 +277,11 @@ private:
     void apply_drag_lock(bool engaged);
     void refresh_active_mask();
     void fire_auto_click(AutoClickAction action);
+
+    // Engine thread only.
+    void apply_macro_requests(int64_t now_us);
+    void drain_macro_events(int64_t now_us);
+    void publish_player_status();
 
     static void bump(std::atomic<uint64_t>& counter) {
         counter.fetch_add(1, std::memory_order_relaxed);
@@ -205,8 +295,24 @@ private:
     Motion motion_;
     AutoClickScheduler scheduler_;
 
+    // Macro clock and the engine-thread-only macro machinery. The default
+    // clock is steady_clock in microseconds; tests replace it.
+    Clock clock_ = [] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    MacroRecorder recorder_;
+    MacroPlayer player_{backend_};
+
     // Hook thread -> engine thread.
     SpscRing<QueuedEvent, 512> queue_{};
+
+    // Mouse hook thread -> engine thread, and keyboard hook thread -> engine
+    // thread. Two rings because the two hooks run on different threads and an
+    // SPSC ring has exactly one producer.
+    SpscRing<MacroInputEvent, 8192> macro_mouse_ring_{};
+    SpscRing<MacroInputEvent, 2048> macro_key_ring_{};
 
     // Which key-downs were swallowed on the hook thread. The matching key-up
     // must be swallowed even if the modifier state changed or the mode was
@@ -252,6 +358,51 @@ private:
     std::atomic<int64_t> auto_click_next_due_ms_{-1};
     std::atomic<uint64_t> auto_click_fires_{0};
     std::atomic<uint64_t> foreground_hash_{0};
+
+    // Macro control chords, handled on the hook thread like the mode toggles.
+    std::atomic<uint16_t> macro_record_key_{key::KeyR};
+    std::atomic<uint8_t> macro_record_mods_{ModCtrl | ModAlt};
+    std::atomic<uint16_t> macro_play_key_{key::KeyP};
+    std::atomic<uint8_t> macro_play_mods_{ModCtrl | ModAlt};
+    std::atomic<uint16_t> macro_stop_key_{key::KeyS};
+    std::atomic<uint8_t> macro_stop_mods_{ModCtrl | ModAlt};
+    std::atomic<bool> macro_record_down_{false};
+    std::atomic<bool> macro_play_down_{false};
+    std::atomic<bool> macro_stop_down_{false};
+    std::atomic<bool> macro_record_toggle_requested_{false};
+    std::atomic<bool> macro_play_pause_requested_{false};
+    std::atomic<bool> macro_stop_requested_{false};
+
+    // Per-macro hotkeys. The hook thread resolves the chord to an index into
+    // the retained immutable table; the UI thread expands the index to an id.
+    MacroHotkeyStore macro_hotkey_store_;
+    std::atomic<const MacroHotkeyTable*> macro_hotkey_table_seen_{nullptr};
+    std::atomic<size_t> macro_hotkey_index_{0};
+    std::atomic<uint16_t> macro_hotkey_key_{key::Invalid};
+    std::atomic<bool> macro_hotkey_requested_{false};
+
+    // Recording state.
+    std::atomic<bool> recording_active_{false};
+    std::atomic<bool> recording_keyboard_{false};
+    std::atomic<bool> record_start_requested_{false};
+    std::atomic<bool> record_stop_requested_{false};
+    std::atomic<uint64_t> recording_steps_{0};
+    std::atomic<double> macro_tolerance_px_{3.0};
+    std::atomic<bool> recorded_macro_ready_{false};
+    std::mutex recorded_macro_mutex_;
+    std::optional<Macro> recorded_macro_;
+
+    // Playback state.
+    std::mutex playback_mutex_;
+    std::shared_ptr<const Macro> pending_macro_;
+    MacroPlaybackOptions pending_options_{};
+    std::atomic<bool> playback_pending_{false};
+    std::atomic<bool> player_pause_requested_{false};
+    std::atomic<bool> player_resume_requested_{false};
+    std::atomic<MacroPlayerState> player_state_{MacroPlayerState::Idle};
+    std::atomic<size_t> player_step_{0};
+    std::atomic<uint64_t> player_steps_{0};
+    std::atomic<uint64_t> player_loops_{0};
 
     // Speed selected by a SpeedUp/SpeedDown binding, in px/s, or 0 when no
     // change is pending.

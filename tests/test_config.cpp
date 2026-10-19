@@ -307,3 +307,89 @@ TEST_CASE("validate catches duplicate auto-click task ids") {
         return p.find("id 'same'") != std::string::npos;
     }));
 }
+
+TEST_CASE("the macro library survives a json roundtrip") {
+    AppConfig original = make_default_config();
+    original.macros.record_keyboard = true;
+    original.macros.move_tolerance_px = 4.5;
+    original.macros.record_key = Chord{ModCtrl | ModShift, key::KeyR};
+    original.macros.play_key = Chord{ModCtrl | ModShift, key::KeyP};
+    original.macros.stop_key = Chord{ModCtrl | ModShift, key::KeyS};
+    original.macros.entries = {
+        MacroEntry{"farming-run", "Farming run", Chord{ModAlt, key::KeyF}},
+        MacroEntry{"trade", "Trade", Chord{ModNone, key::Invalid}},
+    };
+
+    std::string error;
+    const auto parsed = from_json(to_json(original), error);
+    REQUIRE_MESSAGE(parsed.has_value(), error);
+
+    CHECK(parsed->macros.record_keyboard);
+    CHECK(parsed->macros.move_tolerance_px == doctest::Approx(4.5));
+    CHECK(parsed->macros.record_key == Chord{ModCtrl | ModShift, key::KeyR});
+    CHECK(parsed->macros.play_key == Chord{ModCtrl | ModShift, key::KeyP});
+    CHECK(parsed->macros.stop_key == Chord{ModCtrl | ModShift, key::KeyS});
+    REQUIRE(parsed->macros.entries.size() == 2);
+    CHECK(parsed->macros.entries[0].id == "farming-run");
+    CHECK(parsed->macros.entries[0].name == "Farming run");
+    CHECK(parsed->macros.entries[0].hotkey == Chord{ModAlt, key::KeyF});
+    CHECK_FALSE(parsed->macros.entries[1].hotkey.valid());
+}
+
+TEST_CASE("sanitize repairs macro ids, tolerance, and control keys") {
+    AppConfig config = make_default_config();
+    config.macros.move_tolerance_px = 100.0;
+    config.macros.record_key = Chord{ModNone, key::Invalid};
+    config.macros.play_key = Chord{};
+    config.macros.stop_key = Chord{};
+    config.macros.entries = {
+        MacroEntry{"Two Words!", "", Chord{}},
+        MacroEntry{"Two Words?", "", Chord{}},
+    };
+
+    sanitize(config);
+
+    CHECK(config.macros.move_tolerance_px == doctest::Approx(kMaxMacroTolerancePx));
+    CHECK(config.macros.record_key.valid());
+    CHECK(config.macros.play_key.valid());
+    CHECK(config.macros.stop_key.valid());
+    REQUIRE(config.macros.entries.size() == 2);
+    // Ids double as file names, so they are normalized and deduplicated.
+    CHECK(config.macros.entries[0].id == "Two-Words");
+    CHECK(config.macros.entries[0].name == "Two-Words");
+    CHECK(config.macros.entries[1].id == "Two-Words-2");
+    CHECK_FALSE(config.macros.entries[0].hotkey.valid());
+}
+
+TEST_CASE("validate catches macro key clashes, bad ids, and duplicate hotkeys") {
+    AppConfig config = make_default_config();
+    config.macros.play_key = config.macros.record_key;
+    auto problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("macro record, play, and stop") != std::string::npos;
+    }));
+
+    config = make_default_config();
+    config.macros.entries = {
+        MacroEntry{"one", "One", Chord{ModAlt, key::KeyF}},
+        MacroEntry{"two", "Two", Chord{ModAlt, key::KeyF}},
+    };
+    problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("reuses the hotkey") != std::string::npos;
+    }));
+
+    config = make_default_config();
+    config.macros.entries = {MacroEntry{"one", "One", config.mouse_mode.toggle_key}};
+    problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("reserved key") != std::string::npos;
+    }));
+
+    config = make_default_config();
+    config.macros.entries = {MacroEntry{"same", "One"}, MacroEntry{"same", "Two"}};
+    problems = validate(config);
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const std::string& p) {
+        return p.find("Macro id 'same'") != std::string::npos;
+    }));
+}

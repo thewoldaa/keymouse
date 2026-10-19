@@ -246,19 +246,19 @@ KeyTranslation from_scan_code(uint32_t scan_code, bool extended, uint32_t vk) {
     // key can: without this, pressing Pause would be reported as NumLock and
     // the panic key, which defaults to Pause, would never fire.
     if (scan == 0x45 && !extended && vk == VK_PAUSE) {
-        return {key::Pause, false};
+        return {key::Pause, false, scan};
     }
 
     for (const auto& mapping : kScanMappings) {
         if (mapping.scan == scan && mapping.extended == extended) {
-            return {mapping.key, extended};
+            return {mapping.key, extended, mapping.scan};
         }
     }
 
     // Some remappers and virtual keyboards report a VK but a bogus scan code.
     // Falling back to the VK keeps those users working; layout dependent
     // bindings are the price, and only for these unusual devices.
-    return {from_vk_switch(vk), extended};
+    return {from_vk_switch(vk), extended, scan};
 }
 
 KeyId from_virtual_key(uint32_t vk) {
@@ -268,7 +268,7 @@ KeyId from_virtual_key(uint32_t vk) {
 KeyTranslation to_scan_code(KeyId target) {
     for (const auto& mapping : kScanMappings) {
         if (mapping.key == target) {
-            return {mapping.key, mapping.extended};
+            return {mapping.key, mapping.extended, mapping.scan};
         }
     }
     return {};

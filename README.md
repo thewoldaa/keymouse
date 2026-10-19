@@ -21,7 +21,7 @@ It is built for two groups:
 
 ## Status
 
-Version 0.2.0. Windows only. The core is platform independent so Linux and
+Version 0.3.0. Windows only. The core is platform independent so Linux and
 macOS backends can be added without rewriting the logic; see
 [docs/PORTING.md](docs/PORTING.md).
 
@@ -41,6 +41,9 @@ macOS backends can be added without rewriting the logic; see
   holding Ctrl or an Fn key.
 - **Scheduled auto-click** with per-task interval, first delay, repeat limit,
   missed-click handling, and an optional foreground-application filter.
+- **Macro recorder and player** — record mouse movement, clicks, and scrolling,
+  replay it with loops, a delay between loops, and 0.25× to 4× speed, edit every
+  step in a table, and keep a library of `.kmacro` files with global hotkeys.
 - **Profile import and export** as readable JSON, with automatic conflict-free
   renaming when an imported profile already exists.
 - **Panic key** that disables every mapping instantly.
@@ -62,11 +65,11 @@ Task Manager unless KeyMouse itself is run elevated.
 
 Each release is published in two forms:
 
-- **`KeyMouse-0.2.0-setup.exe`** — per-user install, no administrator prompt and
+- **`KeyMouse-0.3.0-setup.exe`** — per-user install, no administrator prompt and
   no `Program Files`. The wizard speaks English, Russian, Japanese, and
   Indonesian, and copies the documentation next to the application. Uninstalling
   asks whether to keep your settings.
-- **`KeyMouse-0.2.0-win64.zip`** — portable. Unpack it anywhere and run
+- **`KeyMouse-0.3.0-win64.zip`** — portable. Unpack it anywhere and run
   `KeyMouse.exe`; nothing is written outside `%LOCALAPPDATA%\KeyMouse`.
 
 Both are unsigned, so Windows SmartScreen may warn the first time.
@@ -187,6 +190,45 @@ was disabled — is skipped rather than fired late; tick "run missed clicks" on 
 task when a late click is preferable to a skipped one. Tasks do not start until
 the master switch is on.
 
+## Macros
+
+The Macros tab records a sequence of mouse actions and plays it back.
+
+**Recording.** Press **Record** (`Ctrl+Alt+R`) and the application installs a
+mouse hook for the duration; every movement, click, and scroll is captured until
+the same chord is pressed again. The movement filter drops points closer
+together than the chosen tolerance — three pixels by default — which keeps a
+recording at a few hundred steps instead of tens of thousands. Keyboard capture
+is a checkbox and off by default; when it is on the keys are recorded *and* still
+reach the foreground application, because capture runs alongside normal routing.
+
+**Playback.** **Play** (`Ctrl+Alt+P`) starts the selected macro, and the same
+chord pauses and resumes. **Stop** (`Ctrl+Alt+S`) and the panic key (Pause) end
+it. Moving or clicking a real mouse pauses playback so you can take over. Each
+macro has a loop count (0 = forever), a delay between loops, a speed multiplier
+from 0.25× to 4×, and an optional global hotkey, recorded in the library list.
+
+Playing a macro does not disable anything else: mouse mode, auto-click, and the
+rest of KeyMouse keep working. Playback is injected with a tag that the recorder
+and the hook ignore, so a looping macro is never recorded back into itself.
+Mouse-mode movement, on the other hand, is ordinary input and *is* recorded if
+the mode is on while recording.
+
+**Editing.** The step table shows the delay, type, and details of every row.
+Delays, coordinates, buttons, wheel deltas, and keys are edited in place; rows
+can be inserted, duplicated, moved up or down, and deleted; **From cursor** fills
+in the current pointer position for a movement step; halving and doubling
+delays rescale the whole sequence; and the play button starts from the selected
+row.
+
+Macros are readable JSON files with a `.kmacro` extension in
+`%LOCALAPPDATA%\KeyMouse\macros`; the library names and hotkeys live in
+`config.json`. Import and export copy files in and out of that folder.
+
+Macros replay absolute screen coordinates. They do not follow a window that
+moved, and a different resolution or DPI scale invalidates them: re-record after
+rearranging the desktop.
+
 ## Configuration
 
 Settings live in `%LOCALAPPDATA%\KeyMouse\config.json`. The file is
@@ -194,7 +236,7 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "locale": "en",
   "enabled": true,
   "panic_key": { "mods": [], "key": "Pause" },
@@ -220,6 +262,17 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
     "toggle_key": { "mods": ["ctrl", "alt"], "key": "KeyT" },
     "tasks": []
   },
+  "macros": {
+    "record_keyboard": false,
+    "move_tolerance_px": 3.0,
+    "record_key": { "mods": ["ctrl", "alt"], "key": "KeyR" },
+    "play_key": { "mods": ["ctrl", "alt"], "key": "KeyP" },
+    "stop_key": { "mods": ["ctrl", "alt"], "key": "KeyS" },
+    "entries": [
+      { "id": "farming-run", "name": "Farming run",
+        "hotkey": { "mods": ["alt"], "key": "KeyF" } }
+    ]
+  },
   "profiles": [
     {
       "name": "Default",
@@ -236,7 +289,9 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
 The sample is abridged: the dashboard also writes the full mouse-mode binding
 table, auto-click tasks, and the other settings shown in the tabs. Schema-1 files
 from 0.1.0 are migrated on load, with the previous fixed-speed feel preserved
-(`accel_max` and `accel_curve` set to 1.0).
+(`accel_max` and `accel_curve` set to 1.0); schema-2 files from 0.2.0 gain an
+empty macro library. The macro steps themselves live next to the configuration
+in `%LOCALAPPDATA%\KeyMouse\macros`, one `.kmacro` file per macro.
 
 A malformed file is renamed to `config.json.broken` and defaults are used, so
 the app always starts.
@@ -252,6 +307,9 @@ the app always starts.
 | Auto-click has a one-second minimum interval | It is a scheduler for periodic actions, not a rapid-fire clicker |
 | Auto-click only runs while KeyMouse is enabled | Its master switch and the KeyMouse enable switch are independent; both must be on |
 | Mouse mode is off after upgrading to 0.2.0 | It is an additional layer, so existing chord users are not surprised; turn it on with `Ctrl+Alt+M` or enable "start with the application" |
+| Macros replay absolute coordinates | Recorded against one screen layout; window moves, resolution changes, and DPI changes invalidate a recording. Re-record after rearranging |
+| A real mouse movement or click pauses playback | So the user can take control without waiting for the macro to end; resume from the dashboard or with the play chord |
+| Keyboard capture does not swallow keys | Capture runs alongside normal routing, so the foreground application still receives the keys that are being recorded |
 | Some games ignore injected input | They read Raw Input rather than the standard message queue |
 | Competitive anti-cheat may block or flag injection | Out of scope; KeyMouse does not attempt to evade detection |
 | Elevated windows do not receive input | Windows UIPI. Run KeyMouse elevated if you need this |
@@ -261,15 +319,16 @@ the app always starts.
 
 ## Roadmap
 
-0.2.0 adds mouse mode, the auto-click scheduler, profile import and export,
-absolute movement, and the acceleration curve on top of the 0.1.0 feature set.
-The hook, movement, clicks, scroll, drag lock, precision and turbo, the
-dashboard, per-application profiles, the panic key, four languages, the
-installer, the portable zip, and the test suite remain.
+0.3.0 adds the macro recorder, player, editor, and library on top of the 0.2.0
+feature set. The hook, movement, clicks, scroll, drag lock, precision and turbo,
+mouse mode, the auto-click scheduler, profiles and exchange, the panic key, four
+languages, the installer, the portable zip, and the test suite remain.
 
 Next:
 
-- **0.3** — a macro recorder, player, editor, and library
+- **0.4** — macro refinements that were left out of 0.3: undo and redo, row
+  multi-select, a pick-on-screen coordinate tool, and a tray submenu for the
+  macro library
 - **Later** — signed binaries, an optional on-screen position indicator, a
   first-run tour, and per-app profile switching by window title
 - **Platforms** — Linux (X11, evdev/uinput) and macOS (CGEventTap) backends

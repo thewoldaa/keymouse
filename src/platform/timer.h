@@ -19,5 +19,9 @@ namespace platform {
 // The timer is per thread, created on first use and closed at thread exit.
 void sleep_for(std::chrono::nanoseconds duration);
 
+// Monotonic timestamp in microseconds, from QueryPerformanceCounter on Windows.
+// Used to time recorded events; never for wall-clock display.
+int64_t monotonic_us();
+
 }  // namespace platform
 }  // namespace km

@@ -14,7 +14,7 @@
 
 namespace km {
 
-inline constexpr int kConfigSchemaVersion = 2;
+inline constexpr int kConfigSchemaVersion = 3;
 
 // A named set of bindings, optionally activated automatically when a
 // particular executable is in the foreground.
@@ -52,6 +52,35 @@ struct AutoClickConfig {
     std::vector<AutoClickTask> tasks;
 };
 
+// One macro in the library. The id is also the .kmacro file stem, so it is kept
+// to characters that are safe in a file name; the display name lives inside the
+// file and in `name`.
+struct MacroEntry {
+    std::string id;
+    std::string name;
+    // Global playback hotkey. An invalid key means "no hotkey".
+    Chord hotkey{ModNone, key::Invalid};
+};
+
+struct MacroConfig {
+    std::vector<MacroEntry> entries;
+
+    // Capture keyboard events while recording. Off by default (spec 16.2):
+    // most recordings are mouse-only.
+    bool record_keyboard = false;
+    // Points closer than this are dropped from recorded movement. 0.5 to 16 px.
+    double move_tolerance_px = 3.0;
+
+    // Always-active chords handled on the hook thread, like the mouse-mode
+    // toggle: record, play/pause, emergency stop.
+    Chord record_key{ModCtrl | ModAlt, key::KeyR};
+    Chord play_key{ModCtrl | ModAlt, key::KeyP};
+    Chord stop_key{ModCtrl | ModAlt, key::KeyS};
+};
+
+inline constexpr double kMinMacroTolerancePx = 0.5;
+inline constexpr double kMaxMacroTolerancePx = 16.0;
+
 struct AppConfig {
     int schema = kConfigSchemaVersion;
 
@@ -77,6 +106,9 @@ struct AppConfig {
     MouseModeConfig mouse_mode;
     AutoClickConfig auto_click;
 
+    // Macro library metadata. The steps themselves live in .kmacro files.
+    MacroConfig macros;
+
     // Profiles
     std::vector<Profile> profiles{Profile{}};
     size_t active_profile = 0;
@@ -91,8 +123,8 @@ struct AppConfig {
     bool chord_in_use(const Chord& chord, const std::string& ignore_profile = {}) const;
 
     // True when the chord is a mode control key (panic, mouse-mode toggle,
-    // auto-click toggle). Those are handled by the engine outside the binding
-    // tables and must not be bound to an action.
+    // auto-click toggle, macro record/play/stop). Those are handled by the
+    // engine outside the binding tables and must not be bound to an action.
     bool chord_is_reserved(const Chord& chord) const;
 };
 

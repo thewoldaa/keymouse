@@ -14,10 +14,12 @@
 KeyMouse.exe
 ├── UI thread        message pump, ImGui, DirectX 11, tray icon
 ├── hook thread      WH_KEYBOARD_LL callback, one message loop
+│                    WH_MOUSE_LL installed on demand while a macro
+│                    is recording or playing
 └── engine thread    ~500 Hz tick, motion integration, injection
 ```
 
-Three threads, no shared mutable state beyond atomics and one SPSC queue.
+Three threads, no shared mutable state beyond atomics and SPSC queues.
 
 ### Why the hook has its own thread
 
@@ -32,6 +34,16 @@ nothing but pump messages keeps callback latency in the microseconds.
 Motion needs a steady tick, and tying it to the UI refresh rate would make
 cursor speed depend on frame rate. The engine thread nominally wakes every 2 ms
 and never blocks on the UI.
+
+### Why the mouse hook is temporary
+
+Recording needs mouse events, but a permanently installed `WH_MOUSE_LL` would
+run a system-wide callback for every pointer movement from startup to shutdown.
+The hook is installed when a recording or a playback starts and removed when
+both are done, so an idle KeyMouse costs nothing and a machine that never uses
+macros never has a second hook. It lives on the same hook thread as the keyboard
+hook, which already has a message loop; the hook itself never swallows and only
+converts `MSLLHOOKSTRUCT` into a `MacroInputEvent`.
 
 It does not assume it woke on time: the tick measures the interval and
 integrates that, clamped to `kMaxTickSeconds` (50 ms). A machine that stalls —
@@ -53,9 +65,13 @@ Windows 10 before 1803, which is what used to starve this loop.
     KBDLLHOOKSTRUCT ──►│ scan code → KeyId              │
                        ├─► Fn layer key state            │
                        ├─► capture mode? ────────────────┼─► return 0, never swallow
+                       ├─► tagged playback? ────────────┼─► return 0, never swallow
                        ├─► panic chord? ─────────────────┼─► toggle enabled, return 1
                        ├─► mouse-mode toggle? ───────────┼─► flip mode, release, return 1
                        ├─► auto-click toggle? ───────────┼─► flip master switch, return 1
+                       ├─► macro control chord? ─────────┼─► request record/play/stop, return 1
+                       ├─► per-macro hotkey? ────────────┼─► report the macro id, return 1
+                       ├─► recording? ───────────────────┼─► SpscRing<MacroInputEvent>
                        ├─► active table:                  │   (lock-free read)
                        │   mouse mode ? plain keys       │
                        │              : profile chords   │
@@ -63,23 +79,35 @@ Windows 10 before 1803, which is what used to starve this loop.
                        │                                │
                        └─► SpscRing<QueuedEvent> ──────►│ pump()
                                                         ├─► Router state machine
+                                                        ├─► macro rings → recorder
+                                                        ├─► player.tick(clock)
                                                         ├─► Motion::step(dt)
                                                         ├─► AutoClickScheduler::poll(now)
                                                         └─► SendInput() / SetCursorPos()
+
+    MSLLHOOKSTRUCT ───►│ MacroInputEvent ──────────────►│ macro ring
+                        │  (tagged when injected)        │  ├─► recorder (untagged only)
+                        │                                │  └─► pause a running playback
 ```
 
 The hook callback may not allocate, lock, or perform I/O. Everything expensive
 happens on the engine thread. The only synchronization is:
 
 - `BindingTable*` — immutable, published via `BindingTableStore`, never freed
+- `MacroHotkeyTable*` — immutable, published via `MacroHotkeyStore`, never freed
 - `SpscRing<QueuedEvent, 512>` — lock-free, single producer, single consumer
+- `SpscRing<MacroInputEvent, 8192>` for mouse input and one of 2048 for keyboard
+  input — same contract, only active while recording
 - `std::atomic` flags for enable state, action bits, and counters
 - `std::shared_ptr<const EngineConfig>` behind a short-lived mutex — the
   configuration hand-off, which is off the hook path and may allocate
 
 Nothing travels the other way: the injected clicks, scrolls, and movements are
-produced on the engine thread and never re-enter the hook, which sees only
-keyboards.
+produced on the engine thread and never re-enter the keyboard hook, which sees
+only keyboards. The mouse hook does see them, which is why playback stamps its
+injections with an `dwExtraInfo` tag: the hook marks those events as injected,
+the engine drops them before they reach a binding, and the recorder ignores them,
+so a looping macro cannot record itself.
 
 ## Module map
 
@@ -92,22 +120,29 @@ src/
 │   ├── binding_table  Flat immutable lookup table for the hook thread
 │   ├── chord       Chord type, parse, format, modifier bits
 │   ├── config      JSON schema, presets, sanitize, validate
-│   ├── engine      Ties backend, router, motion, and scheduler together
+│   ├── engine      Ties backend, router, motion, scheduler, and macros together
 │   ├── i18n        Locale loading with English fallback
 │   ├── keycodes    Canonical layout-independent key ids
+│   ├── macro       Macro step model and the .kmacro JSON format
+│   ├── macro_hotkeys  Immutable per-macro hotkey table for the hook thread
+│   ├── macro_store .kmacro files: save, load, remove, unique ids
 │   ├── motion      Deterministic cursor integrator, relative/absolute
+│   ├── player      Scheduled macro playback with loops, speed, pause
 │   ├── profiles    Foreground matching, preset application, JSON exchange
+│   ├── recorder    Compresses a raw event stream into macro steps
 │   ├── router      Hold/toggle/tap state machine
 │   ├── scheduler   Monotonic-deadline auto-click scheduler
 │   ├── spsc_ring   Lock-free queue
 │   └── version     Version string, filled in by CMake
 ├── input/          platform input backend
 │   ├── input_backend.h   the seam
+│   ├── injection.h       the dwExtraInfo tag for injected playback
 │   ├── backend_win32     WH_KEYBOARD_LL + SendInput/SetCursorPos
 │   └── keycodes_win32    scancode ↔ canonical id
 ├── platform/       OS services behind narrow interfaces
 │   ├── beep, dpi, file_dialog, locale, paths, screen, session, startup,
 │   │   timer
+│   └── mouse_hook    on-demand WH_MOUSE_LL install and removal
 ├── ui/             Dear ImGui dashboard and tabs
 └── app/            Application lifetime, CLI, single instance
 ```
@@ -133,30 +168,51 @@ this thread. In order:
    `GetAsyncKeyState`, not from tracking key events, so a modifier that was
    already down when KeyMouse started is still reported correctly.
 4. Capture mode returns "do not swallow" and stops there. See below.
-5. The panic chord toggles the enable flag, requests a release, and swallows
-   both the press and the release. It is checked before the binding table and
-   before the enable flag, because it is the way out of a bad configuration.
-6. The mouse-mode and auto-click toggle chords flip their runtime switches and
+5. Events carrying the playback tag are dropped and passed through. They were
+   produced by the macro player, not by the user.
+6. The panic chord toggles the enable flag, requests a release, and swallows
+   both the press and the release. Pause/Break also requests a macro stop before
+   the toggle, so the panic key always ends playback even when the macro control
+   keys were moved. The panic check runs before the binding table and before the
+   enable flag, because it is the way out of a bad configuration.
+7. The mouse-mode and auto-click toggle chords flip their runtime switches and
    are swallowed. Their releases are swallowed only when the matching press was
    swallowed, so a plain `M` still delivers its key-up while `Ctrl+Alt+M` is the
    mouse-mode chord.
-7. The lookup uses the plain-key table while mouse mode is on and the active
-   profile's chord table otherwise. Otherwise the swallow decision is a single
-   `BindingTable::find()` and a comparison; the matching key-up is swallowed
-   too, so applications never see a phantom release.
-8. The event is pushed to the ring, or counted as dropped when the ring is full.
+8. The macro control chords (record, play/pause, stop) queue a one-shot request
+   for the UI thread and are swallowed. Auto-repeat does not queue a second
+   request: the key must come up first.
+9. A per-macro hotkey is looked up in the published `MacroHotkeyTable` and
+   reported as an index into it; the UI thread resolves the id. The chord and its
+   release are swallowed, and holding the key does not retrigger it.
+10. While a recording is active, keyboard events are also pushed to the key ring
+    (only when keyboard capture is on), and then continue to the binding table.
+    The recorder observes keys; it never swallows them.
+11. The lookup uses the plain-key table while mouse mode is on and the active
+    profile's chord table otherwise. Otherwise the swallow decision is a single
+    `BindingTable::find()` and a comparison; the matching key-up is swallowed
+    too, so applications never see a phantom release.
+12. The event is pushed to the ring, or counted as dropped when the ring is full.
 
 No allocation. No locks. No logging. Dropping a key event is better than missing
 the hook timeout.
 
 ### Engine thread
 
-`Engine::pump` first applies any configuration published since the last call,
-then drains the ring and runs `Router`, which does allocate (it uses
-`std::unordered_map`). `Engine::tick` integrates motion and scroll by the
-measured `dt`, polls the auto-click scheduler, and injects the result. A
-focused-away or locked session arrives as an ordinary queued event and releases
-everything held; a lock also disarms mouse mode.
+`Engine::pump` applies any configuration published since the last call, drains
+the macro rings into the recorder (before the requests, so a stop request still
+captures the events that arrived just before it), and applies the one-shot macro
+requests: start or stop recording, play, pause, resume, stop, and per-macro
+hotkeys. It then drains the keyboard ring and runs `Router`, which does allocate
+(it uses `std::unordered_map`). `Engine::tick` ticks the macro player against the
+injected clock, then integrates motion and scroll by the measured `dt`, polls the
+auto-click scheduler, and injects the result. A focused-away or locked session
+arrives as an ordinary queued event and releases everything held; a lock also
+disarms mouse mode and stops recording and playback.
+
+The player ticks in front of the master-switch check: the switch controls key
+handling, and a macro started from the dashboard must still run when it is off.
+The panic path stops the player explicitly, so pressing it always ends playback.
 
 `EngineConfig` reaches this thread as a whole `shared_ptr` snapshot. A
 half-updated configuration therefore cannot be applied, and the fields the hook
@@ -167,8 +223,11 @@ published separately and immediately.
 
 The dashboard may only call `apply_config`, `set_enabled`, `set_capture_mode`,
 `set_mouse_mode`, `set_auto_click_enabled`, `set_foreground_exe`,
-`request_release`, and the read-only accessors. Everything else — router state,
-motion state, scheduler state, injection — belongs to the engine thread.
+`request_release`, the macro entry points (`start_macro_recording`,
+`stop_macro_recording`, `play_macro`, `request_macro_pause`,
+`request_macro_resume`, `request_macro_stop`), the one-shot request consumers,
+and the read-only accessors. Everything else — router state, motion state,
+scheduler state, macro player state, injection — belongs to the engine thread.
 `EngineStats` is a snapshot by value: the counters are atomics written from both
 other threads, and reading them one by one could show a mixture of two moments.
 
@@ -184,14 +243,24 @@ open, so the mode is disarmed rather than left on.
 
 ## Injection and feedback
 
-KeyMouse injects mouse input and hooks the keyboard, and the hook deliberately
-does *not* filter events carrying `LLKHF_INJECTED`. Two reasons:
+KeyMouse injects mouse input and hooks the keyboard, and the keyboard hook
+deliberately does *not* filter events carrying `LLKHF_INJECTED`. Two reasons:
 
 - The sets do not overlap, so there is no loop to guard against: no injected
-  event can be a keystroke, and the hook never sees the mouse.
+  event can be a keystroke, and the keyboard hook never sees the mouse. The
+  mouse hook exists only while a macro is recording or playing.
 - Filtering key events would break every remapper, macro pad, and on-screen
   keyboard, and it would make the application untestable with synthetic input.
   It reads to the user as "KeyMouse randomly stops working".
+
+Mouse playback does need a loop guard, because a looping macro would otherwise
+be recorded by the next recording and would pause itself on every movement. The
+player scopes the guard with a `TagGuard`: every injection it makes carries
+`kInjectionTag` in `dwExtraInfo`, and only the player sets it. The mouse hook
+converts the tag to `MacroInputEvent::injected`; the recorder drops those events
+and counts them, and the engine drops tagged keyboard events before any binding.
+Mouse-mode and auto-click injections stay untagged on purpose: they are ordinary
+input, so keyboard-driven cursor movement is recordable.
 
 The one thing that does need care is that injected *movement* passes through the
 Windows pointer settings when sent as relative `SendInput`, which applies pointer
@@ -205,6 +274,16 @@ A deadline more than two seconds late is treated as a missed occurrence and
 skipped unless the task asks to run it once; this keeps a suspended machine from
 unloading a burst of clicks on resume. The foreground executable is hashed on the
 UI thread and published as an atomic for the only-if-app filter.
+
+Macro playback uses the same clock and the same absolute-deadline idea, with a
+copied `shared_ptr<const Macro>` so editing a macro while it plays cannot change
+the executing step list. A tick more than 500 ms behind schedule stops playback
+instead of replaying the backlog, for the same reason the auto-click scheduler
+skips missed occurrences. Pausing releases every held button and key and stores
+the remaining delay; resuming re-presses them and shifts the next deadline by
+that delay, so a pause does not change the pacing of the rest of the macro.
+Stopping, failing, or losing the session releases held input through the same
+path as `release_all()`.
 
 ## Session and focus
 
@@ -223,15 +302,23 @@ load_config()
   ├─ read JSON
   ├─ from_json()      rejects newer schema, keeps .broken copy
   ├─ migrate         schema 1 → 2: accel_max/curve = 1.0
-  ├─ sanitize()       clamps ranges, drops invalid bindings, seeds mouse table
+  │                  schema 2 → 3: empty macro library, default macro keys
+  ├─ sanitize()       clamps ranges, drops invalid bindings, seeds mouse table,
+  │                   normalizes and deduplicates macro ids and hotkeys
   └─ validate()       reports problems, does not block startup
         │
         ▼
 apply_config_to_engine()
   ├─ BindingTableStore::publish()   normal and mouse-mode tables
+  ├─ MacroHotkeyStore::publish()    per-macro hotkey table
   ├─ AutoClickScheduler::configure() keep or restart each task countdown
-  └─ release_all()                  clear stuck keys
+  └─ release_all()                  clear stuck keys and stop playback
 ```
+
+The configuration holds macro metadata (id, display name, hotkey). The steps
+live in one `.kmacro` file per macro under `%LOCALAPPDATA%\KeyMouse\macros`,
+loaded when the macro is played or opened in the editor; renaming a macro changes
+the display name only, never the file id.
 
 Writes are atomic: write `config.json.tmp`, then rename. A crash mid-write
 cannot truncate the real config.

@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(KeyMouse
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Control the mouse entirely from the keyboard"
     HOMEPAGE_URL "https://github.com/thewoldaa/keymouse"
     LANGUAGES CXX)
@@ -43,8 +43,12 @@ add_library(keymouse_core STATIC
     src/core/engine.cpp
     src/core/i18n.cpp
     src/core/keycodes.cpp
+    src/core/macro.cpp
+    src/core/macro_store.cpp
     src/core/motion.cpp
+    src/core/player.cpp
     src/core/profiles.cpp
+    src/core/recorder.cpp
     src/core/router.cpp
     src/core/scheduler.cpp
 )
@@ -68,6 +72,7 @@ add_library(keymouse_win32 STATIC
     src/platform/dpi_win32.cpp
     src/platform/file_dialog_win32.cpp
     src/platform/locale_win32.cpp
+    src/platform/mouse_hook_win32.cpp
     src/platform/paths_win32.cpp
     src/platform/screen_win32.cpp
     src/platform/session_win32.cpp
@@ -108,6 +113,7 @@ add_library(keymouse_ui STATIC
     src/ui/tabs/tab_bindings.cpp
     src/ui/tabs/tab_diagnostics.cpp
     src/ui/tabs/tab_general.cpp
+    src/ui/tabs/tab_macros.cpp
     src/ui/tabs/tab_mouse_mode.cpp
     src/ui/tabs/tab_movement.cpp
     src/ui/tabs/tab_profiles.cpp

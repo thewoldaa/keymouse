@@ -29,6 +29,12 @@ struct InputEvent {
     // Modifier mask active at the time of the event, computed by the backend
     // from the OS key state so the router does not have to track modifiers.
     uint8_t mods = 0;
+    // Monotonic timestamp in microseconds taken on the hook thread. Used to
+    // time macro recordings; zero when the backend does not provide one.
+    int64_t time_us = 0;
+    // Platform extra information (dwExtraInfo on Windows). KeyMouse tags its own
+    // injected events so its hooks can recognize and ignore them.
+    uint64_t extra_info = 0;
 };
 
 // Called on the hook thread. Must return quickly: no allocation, no locks, no
@@ -51,6 +57,16 @@ public:
     virtual void move(int32_t dx, int32_t dy) = 0;
     virtual void button(MouseButton button, bool down) = 0;
     virtual void scroll(Axis axis, int32_t delta) = 0;
+    // Keyboard injection, used by the macro player. Implementations tag the
+    // event so the application's own hook ignores it (see input/injection.h).
+    virtual void key(KeyId key, bool down) = 0;
+
+    // While on, injected events carry the KeyMouse tag. The macro player turns
+    // this on around its own steps so playback is never recorded back in and
+    // never trips the physical-mouse auto-pause. Mouse-mode movement stays
+    // untagged, because a recording made with the keyboard-to-mouse mode is
+    // supposed to capture that movement (spec 16.2).
+    virtual void set_injection_tag(bool tagged) { (void)tagged; }
 
     // Absolute positioning, used by MotionMethod::Absolute. The default
     // implementation reports "unsupported" so backends can ignore it; the

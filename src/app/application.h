@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -13,6 +14,7 @@
 #include "core/config.h"
 #include "core/engine.h"
 #include "core/i18n.h"
+#include "core/macro.h"
 #include "input/input_backend.h"
 #include "platform/session.h"
 #include "ui/dashboard.h"
@@ -72,6 +74,32 @@ private:
     void poll_foreground();
     void update_tray_status();
 
+    // ---- Macros ----------------------------------------------------------
+    // The library is a folder of .kmacro files; the config only carries the
+    // list, the per-macro hotkeys, and the recording settings. Everything
+    // file-related happens on the UI thread.
+    void toggle_macro_recording();
+    void toggle_macro_playback();
+    void play_loaded_macro(bool from_selected);
+    void play_macro_by_id(const std::string& id);
+    void load_macro_into_editor(const std::string& id);
+    void save_macro_edit();
+    void store_finished_recording(Macro macro);
+    void new_macro();
+    void duplicate_macro(const std::string& id);
+    void delete_macro(const std::string& id);
+    void import_macro();
+    void export_macro(const std::string& id);
+    void set_macro_hotkey(const std::string& id, const Chord& chord);
+
+    // Installs or removes the WH_MOUSE_LL hook to follow engine state: it is
+    // only needed while recording or playing.
+    void sync_macro_mouse_hook();
+
+    std::filesystem::path macro_dir() const;
+    std::string unique_macro_id(std::string_view display) const;
+    std::string next_macro_name() const;
+
 public:
     // The window procedure is a static C callback, so it must be reachable
     // from the file-scope WNDCLASSEXW registration helper.
@@ -80,6 +108,9 @@ public:
     // Session notifications arrive through a plain function pointer, so the
     // handler must be a free-standing function too.
     static void session_callback(session::SessionEvent event);
+
+    // Mouse hook trampoline. Runs on the hook thread and only forwards.
+    static void mouse_event_callback(const MacroInputEvent& event);
 
 private:
 

@@ -39,6 +39,12 @@ BindingTableStore::BindingTableStore() {
 }
 
 std::shared_ptr<const BindingTable> BindingTableStore::publish(const std::vector<Binding>& bindings) {
+    if (has_published_ && bindings == last_bindings_ && !tables_.empty()) {
+        return tables_.back();
+    }
+    last_bindings_ = bindings;
+    has_published_ = true;
+
     auto table = BindingTable::build(bindings);
     tables_.push_back(table);
     // The raw pointer is what the hook thread reads. Every table stays alive in

@@ -101,3 +101,36 @@ TEST_CASE("count reflects distinct slots") {
     });
     CHECK(table->count() == 3);
 }
+
+TEST_CASE("publishing identical bindings returns the same table") {
+    BindingTableStore store;
+    const auto first = store.publish({make(Action::MoveUp, ModNone, key::ArrowUp)});
+    const auto again = store.publish({make(Action::MoveUp, ModNone, key::ArrowUp)});
+
+    CHECK(first == again);
+    CHECK(first.get() == again.get());
+    // The current pointer is the same table, not a fresh 32 KB duplicate.
+    CHECK(store.current() == first.get());
+}
+
+TEST_CASE("publishing a changed list builds a new table") {
+    BindingTableStore store;
+    const auto first = store.publish({make(Action::MoveUp, ModNone, key::ArrowUp)});
+    const auto second = store.publish({make(Action::MoveDown, ModNone, key::ArrowUp)});
+
+    CHECK(first != second);
+    CHECK(store.current() == second.get());
+    CHECK(store.current()->find(ModNone, key::ArrowUp)->action == Action::MoveDown);
+    // The session's earlier table is still alive for a hook thread holding it.
+    CHECK(first->find(ModNone, key::ArrowUp)->action == Action::MoveUp);
+}
+
+TEST_CASE("reverting to an earlier list builds a table with the new state") {
+    BindingTableStore store;
+    const std::vector<Binding> original = {make(Action::MoveUp, ModNone, key::ArrowUp)};
+    store.publish(original);
+    store.publish({make(Action::MoveDown, ModNone, key::ArrowUp)});
+    store.publish(original);
+
+    CHECK(store.current()->find(ModNone, key::ArrowUp)->action == Action::MoveUp);
+}

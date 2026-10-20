@@ -72,6 +72,11 @@ public:
 
     // Builds a table and makes it current. Call from a single publishing
     // thread (the UI thread) while other threads read current().
+    //
+    // Publishing the same binding list twice returns the existing table
+    // instead of allocating another one. apply_config() runs on every frame
+    // while a slider is dragged, so without this check a 32 KB table would be
+    // retained per frame for no reason.
     std::shared_ptr<const BindingTable> publish(const std::vector<Binding>& bindings);
 
     // The current table. Safe to call from any thread. Never returns null.
@@ -85,6 +90,10 @@ private:
     // valid.
     std::vector<std::shared_ptr<const BindingTable>> tables_;
     std::atomic<const BindingTable*> current_{nullptr};
+    // The bindings behind `current_`, compared to skip duplicate publications.
+    // Only valid for the publishing thread, like tables_.
+    std::vector<Binding> last_bindings_;
+    bool has_published_ = false;
 };
 
 }  // namespace km

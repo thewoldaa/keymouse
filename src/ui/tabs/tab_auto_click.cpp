@@ -152,14 +152,18 @@ void draw_auto_click_tab(DashboardContext& context) {
     ImGui::TextUnformatted(tr.tr("autoclick.toggle_key").data());
     ImGui::SameLine(260.0f);
     const ChordCaptureResult toggle = chord_capture("autoclick_toggle",
-                                                    auto_click.toggle_key, tr);
+                                                    auto_click.toggle_key, tr,
+                                                    config.fn_layer_key);
     bool capturing = toggle.state == ChordCaptureResult::State::Capturing;
     if (toggle.state == ChordCaptureResult::State::Accepted) {
         auto_click.toggle_key = toggle.chord;
         changed = true;
     }
     if (auto_click.toggle_key == config.panic_key ||
-        auto_click.toggle_key == config.mouse_mode.toggle_key) {
+        auto_click.toggle_key == config.mouse_mode.toggle_key ||
+        auto_click.toggle_key == config.macros.record_key ||
+        auto_click.toggle_key == config.macros.play_key ||
+        auto_click.toggle_key == config.macros.stop_key) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("mouse.reserved").data());

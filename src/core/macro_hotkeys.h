@@ -23,6 +23,8 @@ public:
     struct Entry {
         Chord chord;
         std::string id;
+
+        bool operator==(const Entry&) const = default;
     };
 
     MacroHotkeyTable() = default;
@@ -56,12 +58,20 @@ private:
 class MacroHotkeyStore {
 public:
     void publish(std::vector<MacroHotkeyTable::Entry> entries) {
-        auto table = std::make_shared<const MacroHotkeyTable>(std::move(entries));
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (has_published_ && entries == last_entries_) {
+                return;
+            }
+            last_entries_ = std::move(entries);
+            has_published_ = true;
+
+            auto table = std::make_shared<const MacroHotkeyTable>(
+                std::vector<MacroHotkeyTable::Entry>(last_entries_));
             retained_.push_back(table);
+            published_ = table;
         }
-        current_.store(table.get(), std::memory_order_release);
+        current_.store(published_.get(), std::memory_order_release);
     }
 
     const MacroHotkeyTable* current() const {
@@ -72,6 +82,11 @@ private:
     std::atomic<const MacroHotkeyTable*> current_{nullptr};
     std::mutex mutex_;
     std::vector<std::shared_ptr<const MacroHotkeyTable>> retained_;
+    // The last published list, compared to avoid retaining a duplicate table
+    // on every apply_config() call. Guarded by mutex_.
+    std::vector<MacroHotkeyTable::Entry> last_entries_;
+    std::shared_ptr<const MacroHotkeyTable> published_;
+    bool has_published_ = false;
 };
 
 }  // namespace km

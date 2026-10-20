@@ -1355,14 +1355,30 @@ void Application::poll_foreground() {
     }
     last_foreground_poll_ = now;
 
-    // Keep this running even with a single profile: the auto-click only_if_app
-    // filter and the status tab both need to know what is in front.
+    // The query opens the foreground process, which is not free. Skip it when
+    // nothing consumes the answer: the window is hidden, profiles do not switch
+    // automatically, and no auto-click task is filtered by application.
+    bool any_app_filter = false;
+    if (config_.auto_click.enabled) {
+        for (const AutoClickTask& task : config_.auto_click.tasks) {
+            if (task.enabled && !task.only_if_app.empty()) {
+                any_app_filter = true;
+                break;
+            }
+        }
+    }
+    const bool profile_switching =
+        config_.auto_switch_profiles && config_.profiles.size() >= 2;
+    if (!window_visible_ && !profile_switching && !any_app_filter) {
+        return;
+    }
+
     foreground_exe_ = screen::foreground_exe_name();
     if (engine_) {
         engine_->set_foreground_exe(foreground_exe_);
     }
 
-    if (!config_.auto_switch_profiles || config_.profiles.size() < 2) {
+    if (!profile_switching) {
         return;
     }
 
@@ -1375,8 +1391,11 @@ void Application::poll_foreground() {
     const ProfileMatch match = match_profile(config_, foreground_exe_);
     if (match.matched && match.index != config_.active_profile) {
         config_.active_profile = match.index;
+        // The switch is runtime state, not a user edit: apply it once and do
+        // not mark the config dirty. Marking it dirty would make the main loop
+        // apply the same config a second time and rewrite config.json on every
+        // Alt-Tab.
         apply_config_to_engine();
-        config_dirty_ = true;
     }
 }
 

@@ -273,10 +273,24 @@ public:
 private:
     // Engine thread only.
     void apply_pending_config();
-    void handle_action(Action action, bool active);
+    void handle_action(Action action, bool active,
+                       BindMode mode = BindMode::Tap);
+    // Reports whether a one-shot action fires for this route result. Tap
+    // fires on press; Hold and Toggle fire when the action becomes active, so
+    // a one-shot action bound to Hold triggers on key-down rather than on
+    // release.
+    static bool one_shot_fires(bool active, BindMode mode) {
+        return mode == BindMode::Tap ? !active : active;
+    }
+    // Presses or releases an injected mouse button, tracking which buttons are
+    // held so release_all() can let go of them. `active` is the route state.
+    void apply_click(MouseButton button, bool active, BindMode mode);
     void apply_drag_lock(bool engaged);
     void refresh_active_mask();
     void fire_auto_click(AutoClickAction action);
+    // Milliseconds on the injected clock, so playback, recording, and the
+    // auto-click scheduler share one timeline and tests can drive all three.
+    int64_t now_ms() const { return clock_() / 1000; }
 
     // Engine thread only.
     void apply_macro_requests(int64_t now_us);
@@ -338,6 +352,9 @@ private:
     // impossible for either.
     std::atomic<uint16_t> panic_key_{key::Pause};
     std::atomic<uint8_t> panic_mods_{ModNone};
+    // True while a panic press that was consumed is physically down, so the
+    // matching release is swallowed even if its modifiers were released first.
+    std::atomic<bool> panic_down_{false};
 
     // Mouse mode. The toggle is handled on the hook thread, like the panic key,
     // so it works even while the engine is disabled and the dashboard is hidden.
@@ -419,6 +436,9 @@ private:
     std::atomic<bool> scroll_right_{false};
     std::atomic<bool> precision_{false};
     std::atomic<bool> turbo_{false};
+    // Bit per MouseButton that was pressed by a Hold or Toggle click binding
+    // and has not been released yet. Bounded by the five buttons.
+    std::atomic<uint32_t> held_buttons_{0};
 
     // Counters, written from the hook thread and the engine thread.
     struct Counters {

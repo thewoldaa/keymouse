@@ -25,14 +25,23 @@ ProfileMatch match_profile(const AppConfig& config, std::string_view exe_name) {
     }
 
     const std::string needle = exe_name_from_path(exe_name);
+    size_t fallback = config.profiles.size();
     for (size_t i = 0; i < config.profiles.size(); ++i) {
         const auto& profile = config.profiles[i];
         if (profile.match_exe.empty()) {
+            // The first profile without an application match is the fallback:
+            // it takes over when no other profile claims the foreground window.
+            if (fallback == config.profiles.size()) {
+                fallback = i;
+            }
             continue;
         }
         if (exe_name_from_path(profile.match_exe) == needle) {
             return ProfileMatch{i, true};
         }
+    }
+    if (fallback < config.profiles.size()) {
+        return ProfileMatch{fallback, true};
     }
     return {};
 }

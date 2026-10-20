@@ -13,11 +13,6 @@ namespace {
 // single line is 40 units.
 constexpr int32_t kScrollUnitsPerLine = 40;
 
-int64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 std::shared_ptr<const EngineConfig> make_engine_config(const AppConfig& config) {
     auto out = std::make_shared<EngineConfig>();
     out->motion = config.motion;
@@ -136,25 +131,40 @@ bool Engine::on_input_event(const InputEvent& event) {
         return false;
     }
 
-    // Break stops macro playback no matter what state the engine is in. It
-    // stays usable as the panic key below.
-    if (event.key == key::Pause && event.type == InputEvent::Type::KeyDown) {
-        macro_stop_requested_.store(true, std::memory_order_relaxed);
-    }
-
     // The panic key works even while the engine is disabled: it is the way back
     // out of a bad configuration, so it must not depend on bindings being
-    // usable.
-    if (event.key == panic_key_.load(std::memory_order_relaxed) &&
-        event.mods == panic_mods_.load(std::memory_order_relaxed)) {
-        if (event.type == InputEvent::Type::KeyDown) {
-            enabled_.store(!enabled_.load(std::memory_order_relaxed),
-                           std::memory_order_relaxed);
-            release_requested_.store(true, std::memory_order_relaxed);
+    // usable. Its press also stops a macro recording or playback, which is what
+    // "stop everything now" means when the keyboard is misbehaving.
+    const KeyId panic_key = static_cast<KeyId>(
+        panic_key_.load(std::memory_order_relaxed));
+    if (event.key == panic_key) {
+        const ModMask panic_mods = panic_mods_.load(std::memory_order_relaxed);
+        if (event.type == InputEvent::Type::KeyDown && event.mods == panic_mods) {
+            // Auto-repeat of a held panic key must not toggle the engine back
+            // on. Only the first press counts.
+            if (!panic_down_.exchange(true, std::memory_order_relaxed)) {
+                enabled_.store(!enabled_.load(std::memory_order_relaxed),
+                               std::memory_order_relaxed);
+                release_requested_.store(true, std::memory_order_relaxed);
+                macro_stop_requested_.store(true, std::memory_order_relaxed);
+                record_stop_requested_.store(true, std::memory_order_relaxed);
+            }
+            return true;
         }
-        // Swallow the release as well, so the foreground application does not
-        // see a key-up for a key it never saw go down.
-        return true;
+        // Swallow the release of a press that was consumed, even when its
+        // modifiers were let go first: the application saw the key go down and
+        // must see it come up. A release whose press was not consumed keeps
+        // its own life, so a plain key next to a chord panic key is unaffected.
+        if (event.type == InputEvent::Type::KeyUp &&
+            panic_down_.exchange(false, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
+    // Break stops macro playback no matter what state the engine is in. It
+    // stays usable as the panic key above.
+    if (event.key == key::Pause && event.type == InputEvent::Type::KeyDown) {
+        macro_stop_requested_.store(true, std::memory_order_relaxed);
     }
 
     // Mouse mode and the auto-click switch are handled here, like the panic
@@ -383,6 +393,7 @@ size_t Engine::pump() {
                 macro_play_down_.store(false, std::memory_order_relaxed);
                 macro_stop_down_.store(false, std::memory_order_relaxed);
                 macro_hotkey_key_.store(key::Invalid, std::memory_order_relaxed);
+                panic_down_.store(false, std::memory_order_relaxed);
             }
             release_all();
             continue;
@@ -398,12 +409,12 @@ size_t Engine::pump() {
         if (event.kind == QueuedEvent::Kind::KeyDown) {
             const RouteResult result = active_router.on_key_down(event.key, event.mods);
             if (result.action != Action::None && result.changed) {
-                handle_action(result.action, result.active);
+                handle_action(result.action, result.active, result.mode);
             }
         } else {
             const RouteResult result = active_router.on_key_up(event.key);
             if (result.action != Action::None && result.changed) {
-                handle_action(result.action, result.active);
+                handle_action(result.action, result.active, result.mode);
             }
         }
     }
@@ -450,7 +461,7 @@ void Engine::apply_pending_config() {
     release_all();
 }
 
-void Engine::handle_action(Action action, bool active) {
+void Engine::handle_action(Action action, bool active, BindMode mode) {
     switch (action) {
         case Action::MoveUp: move_up_.store(active); break;
         case Action::MoveDown: move_down_.store(active); break;
@@ -464,47 +475,27 @@ void Engine::handle_action(Action action, bool active) {
         case Action::Turbo: turbo_.store(active); break;
 
         case Action::ClickLeft:
-            if (!active) {
-                backend_.button(MouseButton::Left, true);
-                backend_.button(MouseButton::Left, false);
-                bump(counters_.injected_buttons);
-            }
+            apply_click(MouseButton::Left, active, mode);
             break;
 
         case Action::ClickRight:
-            if (!active) {
-                backend_.button(MouseButton::Right, true);
-                backend_.button(MouseButton::Right, false);
-                bump(counters_.injected_buttons);
-            }
+            apply_click(MouseButton::Right, active, mode);
             break;
 
         case Action::ClickMiddle:
-            if (!active) {
-                backend_.button(MouseButton::Middle, true);
-                backend_.button(MouseButton::Middle, false);
-                bump(counters_.injected_buttons);
-            }
+            apply_click(MouseButton::Middle, active, mode);
             break;
 
         case Action::ClickX1:
-            if (!active) {
-                backend_.button(MouseButton::X1, true);
-                backend_.button(MouseButton::X1, false);
-                bump(counters_.injected_buttons);
-            }
+            apply_click(MouseButton::X1, active, mode);
             break;
 
         case Action::ClickX2:
-            if (!active) {
-                backend_.button(MouseButton::X2, true);
-                backend_.button(MouseButton::X2, false);
-                bump(counters_.injected_buttons);
-            }
+            apply_click(MouseButton::X2, active, mode);
             break;
 
         case Action::DoubleClick:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 for (int i = 0; i < 2; ++i) {
                     backend_.button(MouseButton::Left, true);
                     backend_.button(MouseButton::Left, false);
@@ -518,25 +509,25 @@ void Engine::handle_action(Action action, bool active) {
             break;
 
         case Action::CursorCenter:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 center_requested_.store(true);
             }
             break;
 
         case Action::ToggleEnabled:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 set_enabled(!enabled_.load());
             }
             break;
 
         case Action::OpenDashboard:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 dashboard_requested_.store(true);
             }
             break;
 
         case Action::SpeedUp:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 motion_config_.speed_px_s = std::min(
                     motion_config_.speed_px_s * 1.25, MotionConfig::kMaxSpeed);
                 motion_.configure(motion_config_);
@@ -546,7 +537,7 @@ void Engine::handle_action(Action action, bool active) {
             break;
 
         case Action::SpeedDown:
-            if (!active) {
+            if (one_shot_fires(active, mode)) {
                 motion_config_.speed_px_s = std::max(
                     motion_config_.speed_px_s / 1.25, MotionConfig::kMinSpeed);
                 motion_.configure(motion_config_);
@@ -561,6 +552,40 @@ void Engine::handle_action(Action action, bool active) {
     }
 
     refresh_active_mask();
+}
+
+void Engine::apply_click(MouseButton button, bool active, BindMode mode) {
+    const uint32_t bit = 1u << static_cast<unsigned>(button);
+
+    if (mode == BindMode::Tap) {
+        // Tap reports `active == false` on press: a complete click. It does not
+        // touch the held-button bits, which belong to Hold and Toggle bindings;
+        // a config change that changes the mode releases everything anyway.
+        if (!active) {
+            backend_.button(button, true);
+            backend_.button(button, false);
+            bump(counters_.injected_buttons);
+        }
+        return;
+    }
+
+    // Hold and Toggle report the intended button state directly. Tracking the
+    // bit lets release_all() let go of a button that is still held when the
+    // engine is disabled or the session is lost, so the desktop is never left
+    // in a drag.
+    if (active) {
+        const uint32_t was = held_buttons_.fetch_or(bit, std::memory_order_relaxed);
+        if ((was & bit) == 0) {
+            backend_.button(button, true);
+            bump(counters_.injected_buttons);
+        }
+    } else {
+        const uint32_t was = held_buttons_.fetch_and(~bit, std::memory_order_relaxed);
+        if ((was & bit) != 0) {
+            backend_.button(button, false);
+            bump(counters_.injected_buttons);
+        }
+    }
 }
 
 void Engine::apply_drag_lock(bool engaged) {
@@ -589,6 +614,12 @@ void Engine::refresh_active_mask() {
     set(Action::Precision, precision_.load(std::memory_order_relaxed));
     set(Action::Turbo, turbo_.load(std::memory_order_relaxed));
     set(Action::DragLock, drag_lock_.load(std::memory_order_relaxed));
+    const uint32_t buttons = held_buttons_.load(std::memory_order_relaxed);
+    set(Action::ClickLeft, (buttons & (1u << static_cast<unsigned>(MouseButton::Left))) != 0);
+    set(Action::ClickRight, (buttons & (1u << static_cast<unsigned>(MouseButton::Right))) != 0);
+    set(Action::ClickMiddle, (buttons & (1u << static_cast<unsigned>(MouseButton::Middle))) != 0);
+    set(Action::ClickX1, (buttons & (1u << static_cast<unsigned>(MouseButton::X1))) != 0);
+    set(Action::ClickX2, (buttons & (1u << static_cast<unsigned>(MouseButton::X2))) != 0);
     active_mask_.store(mask, std::memory_order_relaxed);
 }
 
@@ -722,6 +753,14 @@ void Engine::release_all() {
     // Unconditionally drop a drag lock if one is engaged. The helper is a
     // no-op when the lock is already off.
     apply_drag_lock(false);
+    // Same for buttons pressed by a Hold or Toggle click binding.
+    const uint32_t buttons = held_buttons_.exchange(0, std::memory_order_relaxed);
+    for (unsigned i = 0; i < 5; ++i) {
+        if ((buttons & (1u << i)) != 0) {
+            backend_.button(static_cast<MouseButton>(i), false);
+            bump(counters_.injected_buttons);
+        }
+    }
 
     move_up_.store(false);
     move_down_.store(false);
@@ -799,6 +838,7 @@ void Engine::forget_toggle_states() {
     macro_play_down_.store(false, std::memory_order_relaxed);
     macro_stop_down_.store(false, std::memory_order_relaxed);
     macro_hotkey_key_.store(key::Invalid, std::memory_order_relaxed);
+    panic_down_.store(false, std::memory_order_relaxed);
 }
 
 void Engine::set_auto_click_enabled(bool on) {

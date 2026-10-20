@@ -13,6 +13,7 @@
   "common.yes": "Ya",
   "common.no": "Tidak",
   "common.remove": "Hapus",
+  "common.clear": "Kosongkan",
   "common.cancel": "Batal",
   "common.reset": "Atur ulang",
   "common.close": "Tutup",
@@ -20,6 +21,7 @@
   "capture.unset": "(belum diatur)",
   "capture.button_prompt": "Tekan tombol...",
   "capture.instruction": "Tekan kombinasi tombol yang ingin dipasangkan.",
+  "capture.key_instruction": "Tekan tombol yang ingin dipakai.",
   "capture.escape_hint": "Esc untuk membatalkan.",
   "capture.waiting": "...",
 

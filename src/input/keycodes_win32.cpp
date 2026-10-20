@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "input/keycodes_win32.h"
 
+#include <optional>
+
 #include <windows.h>
 
 namespace km {
@@ -17,6 +19,11 @@ struct ScanMapping {
 
 // clang-format off
 constexpr ScanMapping kScanMappings[] = {
+    // PrintScreen is E0 37 and is listed first so to_scan_code() picks the
+    // normal key rather than the Alt+PrintScreen form further down. Scan 0x37
+    // without the extended flag is NumpadMultiply, listed in its own place.
+    {0x37, true, key::PrintScreen},
+
     {0x01, false, key::Escape},
     {0x02, false, key::Key1},
     {0x03, false, key::Key1 + 1},
@@ -100,14 +107,27 @@ constexpr ScanMapping kScanMappings[] = {
     {0x51, false, key::Numpad1 + 2},
     {0x52, false, key::Numpad0},
     {0x53, false, key::NumpadDecimal},
-    {0x54, false, key::PrintScreen},
+    {0x54, false, key::PrintScreen},  // Alt+PrintScreen (SysRq)
     {0x56, false, key::IntlBackslash},
     {0x57, false, key::F1 + 10},
     {0x58, false, key::F1 + 11},
-    {0x59, false, key::F13},
-    {0x64, false, key::F13 + 1},
-    {0x65, false, key::F13 + 2},
-    {0x66, false, key::F13 + 3},
+    // F13..F23 are non-extended 0x64..0x6E in scan code set 1; F24 is 0x76.
+    // Verified against MapVirtualKey(MAPVK_VSC_TO_VK): 0x64 is VK_F13 and
+    // 0x6E is VK_F23. Scan 0x59 is not an F-key (it resolves to VK_CLEAR on
+    // layouts that use it), and older versions of this table mapped it to F13
+    // by mistake.
+    {0x64, false, key::F13},
+    {0x65, false, key::F13 + 1},
+    {0x66, false, key::F13 + 2},
+    {0x67, false, key::F13 + 3},
+    {0x68, false, key::F13 + 4},
+    {0x69, false, key::F13 + 5},
+    {0x6A, false, key::F13 + 6},
+    {0x6B, false, key::F13 + 7},
+    {0x6C, false, key::F13 + 8},
+    {0x6D, false, key::F13 + 9},
+    {0x6E, false, key::F13 + 10},
+    {0x76, false, key::F24},
     {0x70, false, key::KanaMode},
     {0x73, false, key::IntlBackslash},  // Brazilian ABNT2
 
@@ -274,16 +294,90 @@ KeyTranslation to_scan_code(KeyId target) {
     return {};
 }
 
-bool is_protected_key(uint32_t vk) {
-    // Ctrl+Alt+Del is a Secure Attention Sequence handled by the kernel. The
-    // hook never sees it, and swallowing its component keys would leave the
-    // user with a dead Ctrl or Alt.
-    switch (vk) {
-        case VK_LWIN:
-        case VK_RWIN:
-            return false;  // Win alone is fine; Win+L is caught by the OS.
-        default:
-            return false;
+std::optional<uint32_t> to_virtual_key(KeyId target) {
+    // Used as the injection fallback for keys with no known scan code. The
+    // switch mirrors from_vk_switch(), so a key that can be received can also
+    // be sent back out during macro playback.
+    if (target >= key::KeyA && target <= key::KeyZ) {
+        return static_cast<uint32_t>('A' + (target - key::KeyA));
+    }
+    if (target >= key::Key1 && target <= key::Key1 + 8) {
+        return static_cast<uint32_t>('1' + (target - key::Key1));
+    }
+    if (target == key::Key0) {
+        return static_cast<uint32_t>('0');
+    }
+    if (target >= key::F1 && target <= key::F1 + 11) {
+        return VK_F1 + (target - key::F1);
+    }
+    if (target >= key::F13 && target <= key::F24) {
+        return VK_F13 + (target - key::F13);
+    }
+    if (target >= key::Numpad1 && target <= key::Numpad9) {
+        return VK_NUMPAD1 + (target - key::Numpad1);
+    }
+    if (target == key::Numpad0) {
+        return VK_NUMPAD0;
+    }
+
+    switch (target) {
+        case key::Backspace: return VK_BACK;
+        case key::Tab: return VK_TAB;
+        case key::Enter: return VK_RETURN;
+        case key::ShiftLeft: return VK_LSHIFT;
+        case key::ShiftRight: return VK_RSHIFT;
+        case key::ControlLeft: return VK_LCONTROL;
+        case key::ControlRight: return VK_RCONTROL;
+        case key::AltLeft: return VK_LMENU;
+        case key::AltRight: return VK_RMENU;
+        case key::Pause: return VK_PAUSE;
+        case key::CapsLock: return VK_CAPITAL;
+        case key::Escape: return VK_ESCAPE;
+        case key::Space: return VK_SPACE;
+        case key::PageUp: return VK_PRIOR;
+        case key::PageDown: return VK_NEXT;
+        case key::End: return VK_END;
+        case key::Home: return VK_HOME;
+        case key::ArrowLeft: return VK_LEFT;
+        case key::ArrowUp: return VK_UP;
+        case key::ArrowRight: return VK_RIGHT;
+        case key::ArrowDown: return VK_DOWN;
+        case key::PrintScreen: return VK_SNAPSHOT;
+        case key::Insert: return VK_INSERT;
+        case key::Delete: return VK_DELETE;
+        case key::MetaLeft: return VK_LWIN;
+        case key::MetaRight: return VK_RWIN;
+        case key::Menu: return VK_APPS;
+        case key::NumpadMultiply: return VK_MULTIPLY;
+        case key::NumpadAdd: return VK_ADD;
+        case key::NumpadSubtract: return VK_SUBTRACT;
+        case key::NumpadDecimal: return VK_DECIMAL;
+        case key::NumpadDivide: return VK_DIVIDE;
+        case key::NumLock: return VK_NUMLOCK;
+        case key::ScrollLock: return VK_SCROLL;
+        case key::Semicolon: return VK_OEM_1;
+        case key::Equal: return VK_OEM_PLUS;
+        case key::Comma: return VK_OEM_COMMA;
+        case key::Minus: return VK_OEM_MINUS;
+        case key::Period: return VK_OEM_PERIOD;
+        case key::Slash: return VK_OEM_2;
+        case key::Backquote: return VK_OEM_3;
+        case key::BracketLeft: return VK_OEM_4;
+        case key::Backslash: return VK_OEM_5;
+        case key::BracketRight: return VK_OEM_6;
+        case key::Quote: return VK_OEM_7;
+        case key::IntlBackslash: return VK_OEM_102;
+        case key::VolumeMute: return VK_VOLUME_MUTE;
+        case key::VolumeDown: return VK_VOLUME_DOWN;
+        case key::VolumeUp: return VK_VOLUME_UP;
+        case key::MediaTrackNext: return VK_MEDIA_NEXT_TRACK;
+        case key::MediaTrackPrev: return VK_MEDIA_PREV_TRACK;
+        case key::MediaStop: return VK_MEDIA_STOP;
+        case key::MediaPlayPause: return VK_MEDIA_PLAY_PAUSE;
+        case key::KanaMode: return VK_KANA;
+        case key::Convert: return VK_CONVERT;
+        case key::NonConvert: return VK_NONCONVERT;
+        default: return std::nullopt;
     }
 }
 

@@ -98,7 +98,4 @@ public:
     virtual const char* name() const = 0;
 };
 
-// Creates the backend for the platform this binary was built for.
-InputBackend* make_native_backend();
-
 }  // namespace km

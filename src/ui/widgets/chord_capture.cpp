@@ -114,6 +114,21 @@ ModMask mods_from_io(const ImGuiIO& io) {
     return mods;
 }
 
+// True when the physical key currently configured as the Fn layer is down.
+// The Fn layer key is an ordinary key chosen by the user (Menu by default), so
+// it has to be found in the mapping table before ImGui's state can be read.
+bool fn_layer_down(KeyId fn_layer_key) {
+    if (fn_layer_key == key::Invalid) {
+        return false;
+    }
+    for (const auto& mapping : kMappings) {
+        if (mapping.key == fn_layer_key) {
+            return ImGui::IsKeyDown(mapping.imgui);
+        }
+    }
+    return false;
+}
+
 // Storage keys for the recorder state, resolved against the widget's ID so
 // every recorder on screen has its own.
 struct CaptureState {
@@ -142,7 +157,8 @@ std::string chord_label(const Chord& chord, const I18n& tr) {
     return format_chord(chord);
 }
 
-ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18n& tr) {
+ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18n& tr,
+                                 KeyId fn_layer_key) {
     ChordCaptureResult result;
     result.chord = current;
 
@@ -210,7 +226,12 @@ ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18
                     continue;
                 }
 
-                const ModMask mods = mods_from_io(ImGui::GetIO());
+                ModMask mods = mods_from_io(ImGui::GetIO());
+                if (fn_layer_down(fn_layer_key)) {
+                    // The user is holding the configured Fn layer key, which is
+                    // an ordinary key as far as ImGui is concerned.
+                    mods |= ModFn;
+                }
 
                 if (mapping.imgui == ImGuiKey_Escape) {
                     *state.open = 0;
@@ -219,9 +240,10 @@ ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18
                     break;
                 }
 
-                if (key_is_modifier(mapping.key)) {
-                    // A modifier on its own is not a chord. Remember it and
-                    // keep waiting for the base key.
+                if (key_is_modifier(mapping.key) ||
+                    (fn_layer_key != key::Invalid && mapping.key == fn_layer_key)) {
+                    // A modifier, or the Fn layer key itself, on its own is not
+                    // a chord. Remember it and keep waiting for the base key.
                     *state.mods = mods;
                     continue;
                 }
@@ -244,6 +266,99 @@ ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18
             // The popup went away without this function closing it (Escape is
             // handled by ImGui for modal popups). Treat that as a cancel so the
             // button does not stay stuck in "press a key" forever.
+            *state.open = 0;
+            result.state = ChordCaptureResult::State::Cancelled;
+        }
+    }
+
+    ImGui::PopID();
+    return result;
+}
+
+KeyCaptureResult key_capture(const char* id, KeyId current, const I18n& tr) {
+    KeyCaptureResult result;
+    result.key = current;
+
+    ImGui::PushID(id);
+    const CaptureState state = state_for();
+
+    const bool open = *state.open != 0;
+    std::string label;
+    if (open) {
+        label = std::string(tr.tr("capture.button_prompt"));
+    } else if (current == key::Invalid) {
+        label = std::string(tr.tr("capture.unset"));
+    } else {
+        label = std::string(key_name(current));
+    }
+
+    if (open) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button(label.c_str(), ImVec2(150.0f, 0.0f)) && !open) {
+        *state.open = 1;
+        *state.mods = 0;
+        *state.key = key::Invalid;
+        ImGui::OpenPopup("##capture");
+    }
+    if (open) {
+        ImGui::PopStyleColor();
+    }
+
+    if (*state.open != 0) {
+        ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f));
+        if (ImGui::BeginPopupModal("##capture", nullptr,
+                                   ImGuiWindowFlags_NoTitleBar |
+                                   ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoSavedSettings)) {
+            result.state = ChordCaptureResult::State::Capturing;
+
+            ImGui::TextUnformatted(tr.tr("capture.key_instruction").data());
+            ImGui::TextDisabled("%s", tr.tr("capture.escape_hint").data());
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            std::string preview;
+            if (*state.key != key::Invalid) {
+                preview = std::string(key_name(static_cast<KeyId>(*state.key)));
+            }
+            if (preview.empty()) {
+                preview = tr.tr("capture.waiting").data();
+            }
+            ImGui::TextUnformatted(preview.c_str());
+
+            ImGui::Spacing();
+            if (ImGui::Button(tr.tr("common.cancel").data(), ImVec2(90.0f, 0.0f))) {
+                *state.open = 0;
+                result.state = ChordCaptureResult::State::Cancelled;
+                ImGui::CloseCurrentPopup();
+            }
+
+            // Unlike chord_capture, every mapped key is accepted here --
+            // including modifiers, which are ordinary keys in a macro step.
+            // Escape still cancels, because a macro step never captures it:
+            // the user cannot press Escape without closing the recorder.
+            for (const auto& mapping : kMappings) {
+                if (!ImGui::IsKeyPressed(mapping.imgui, false)) {
+                    continue;
+                }
+                if (mapping.imgui == ImGuiKey_Escape) {
+                    *state.open = 0;
+                    result.state = ChordCaptureResult::State::Cancelled;
+                    ImGui::CloseCurrentPopup();
+                    break;
+                }
+                *state.key = mapping.key;
+                *state.open = 0;
+                result.state = ChordCaptureResult::State::Accepted;
+                result.key = mapping.key;
+                ImGui::CloseCurrentPopup();
+                break;
+            }
+
+            ImGui::EndPopup();
+        } else if (*state.open != 0) {
             *state.open = 0;
             result.state = ChordCaptureResult::State::Cancelled;
         }

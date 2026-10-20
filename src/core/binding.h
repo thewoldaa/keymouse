@@ -34,6 +34,8 @@ struct Binding {
     SwallowMode swallow = SwallowMode::Swallow;
 
     bool valid() const { return action != Action::None && chord.valid(); }
+
+    bool operator==(const Binding&) const = default;
 };
 
 std::string_view bind_mode_name(BindMode mode);

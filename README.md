@@ -21,7 +21,7 @@ It is built for two groups:
 
 ## Status
 
-Version 0.3.0. Windows only. The core is platform independent so Linux and
+Version 0.3.1. Windows only. The core is platform independent so Linux and
 macOS backends can be added without rewriting the logic; see
 [docs/PORTING.md](docs/PORTING.md).
 
@@ -65,11 +65,11 @@ Task Manager unless KeyMouse itself is run elevated.
 
 Each release is published in two forms:
 
-- **`KeyMouse-0.3.0-setup.exe`** — per-user install, no administrator prompt and
+- **`KeyMouse-0.3.1-setup.exe`** — per-user install, no administrator prompt and
   no `Program Files`. The wizard speaks English, Russian, Japanese, and
   Indonesian, and copies the documentation next to the application. Uninstalling
   asks whether to keep your settings.
-- **`KeyMouse-0.3.0-win64.zip`** — portable. Unpack it anywhere and run
+- **`KeyMouse-0.3.1-win64.zip`** — portable. Unpack it anywhere and run
   `KeyMouse.exe`; nothing is written outside `%LOCALAPPDATA%\KeyMouse`.
 
 Both are unsigned, so Windows SmartScreen may warn the first time.
@@ -314,15 +314,20 @@ the app always starts.
 | Competitive anti-cheat may block or flag injection | Out of scope; KeyMouse does not attempt to evade detection |
 | Elevated windows do not receive input | Windows UIPI. Run KeyMouse elevated if you need this |
 | UAC prompts and the lock screen are unreachable | Windows secure desktop, by design |
+| Macro steps record raw keys, including modifiers | A `KeyDown` step for `Shift` is a valid physical key, so the step editor uses its own single-key recorder rather than chord recording |
 | Media keys (`Play`, `Volume`, …) cannot be recorded | Dear ImGui 1.93 has no key identifiers for them; the keyboard's own controls still work |
 | Windows SmartScreen warns on first run | The binaries are unsigned. Build from source if you prefer |
 
 ## Roadmap
 
-0.3.0 adds the macro recorder, player, editor, and library on top of the 0.2.0
-feature set. The hook, movement, clicks, scroll, drag lock, precision and turbo,
-mouse mode, the auto-click scheduler, profiles and exchange, the panic key, four
-languages, the installer, the portable zip, and the test suite remain.
+0.3.1 is a correctness release for the 0.3.0 macro update: it fixes chord
+recording for the Fn layer, click bindings in hold and toggle mode, the panic
+key, per-application profile fallback, key scan codes for macro playback, and
+two memory and idle-cost issues found in review. 0.3.0 added the macro
+recorder, player, editor, and library on top of the 0.2.0 feature set. The hook,
+movement, clicks, scroll, drag lock, precision and turbo, mouse mode, the
+auto-click scheduler, profiles and exchange, the panic key, four languages, the
+installer, the portable zip, and the test suite remain.
 
 Next:
 

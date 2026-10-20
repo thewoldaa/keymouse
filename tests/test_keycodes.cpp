@@ -6,6 +6,10 @@
 
 #include "core/keycodes.h"
 
+#if defined(_WIN32)
+#include "input/keycodes_win32.h"
+#endif
+
 using namespace km;
 
 TEST_CASE("every key id is unique") {
@@ -78,3 +82,68 @@ TEST_CASE("labels are never empty") {
         CHECK_FALSE(info.label.empty());
     }
 }
+
+#if defined(_WIN32)
+TEST_CASE("PrintScreen maps to its extended scan code") {
+    const auto translation = win32::to_scan_code(key::PrintScreen);
+    CHECK(translation.key == key::PrintScreen);
+    CHECK(translation.extended);
+    CHECK(translation.scan == 0x37);
+}
+
+TEST_CASE("every F13..F24 key has a scan code") {
+    std::set<uint32_t> scans;
+    for (KeyId id = key::F13; id <= key::F24; ++id) {
+        const auto translation = win32::to_scan_code(id);
+        CHECK_MESSAGE(translation.key == id, "missing scan code for ", key_name(id));
+        CHECK_FALSE(translation.extended);
+        // Distinct keys must not share a scan code; a duplicate would mean one
+        // of the mappings is off by one.
+        CHECK_MESSAGE(scans.insert(translation.scan).second,
+                      "duplicate scan code for ", key_name(id));
+    }
+}
+
+TEST_CASE("F13 is scan 0x64 and F24 is scan 0x76") {
+    CHECK(win32::to_scan_code(key::F13).scan == 0x64);
+    CHECK(win32::to_scan_code(key::F24).scan == 0x76);
+    // Scan 0x59 is not an F-key; mapping it to one shifted the whole range.
+    CHECK(win32::from_scan_code(0x59, false, 0).key != key::F13);
+}
+
+TEST_CASE("F13..F24 scan codes round trip through the hook table") {
+    for (KeyId id = key::F13; id <= key::F24; ++id) {
+        const auto translation = win32::to_scan_code(id);
+        REQUIRE(translation.key == id);
+        const auto back = win32::from_scan_code(translation.scan,
+                                                translation.extended, 0);
+        CHECK(back.key == id);
+    }
+}
+
+TEST_CASE("PrintScreen round trips through the hook table") {
+    const auto translation = win32::to_scan_code(key::PrintScreen);
+    REQUIRE(translation.key == key::PrintScreen);
+    const auto back = win32::from_scan_code(translation.scan,
+                                            translation.extended, 0);
+    CHECK(back.key == key::PrintScreen);
+}
+
+TEST_CASE("media keys have a virtual-key injection fallback") {
+    // The extended scan code exists, but a virtual-key path must exist too so a
+    // key whose scan code a backend cannot reproduce still has a way out.
+    const auto vk = win32::to_virtual_key(key::MediaPlayPause);
+    REQUIRE(vk.has_value());
+    // VK_MEDIA_PLAY_PAUSE is 0xB3 (winuser.h).
+    CHECK(*vk == 0xB3u);
+    CHECK(win32::from_virtual_key(*vk) == key::MediaPlayPause);
+}
+
+TEST_CASE("virtual-key fallback covers every letter and digit") {
+    for (KeyId id = key::KeyA; id <= key::KeyZ; ++id) {
+        const auto vk = win32::to_virtual_key(id);
+        REQUIRE(vk.has_value());
+        CHECK(win32::from_virtual_key(*vk) == id);
+    }
+}
+#endif

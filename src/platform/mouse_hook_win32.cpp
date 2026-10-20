@@ -2,6 +2,7 @@
 #include "platform/mouse_hook.h"
 
 #include <atomic>
+#include <mutex>
 #include <thread>
 
 #include <windows.h>
@@ -16,9 +17,15 @@ namespace {
 std::atomic<MouseEventSink> g_sink{nullptr};
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_stop_requested{false};
-std::atomic<bool> g_finished{true};
 std::atomic<DWORD> g_thread_id{0};
 HHOOK g_hook = nullptr;
+
+// Serializes the hook lifecycle. Starting and stopping happen on the UI thread,
+// but the thread's own cleanup writes g_hook and g_running, so a start that
+// follows a stop must not observe the previous thread half torn down.
+std::mutex g_lifecycle_mutex;
+std::thread g_thread;
+std::atomic<bool> g_installed{false};
 
 MacroInputEvent make_event(MacroInputEvent::Type type,
                            const MSLLHOOKSTRUCT& info) {
@@ -111,47 +118,69 @@ void hook_thread_main() {
 
     g_hook = SetWindowsHookExW(WH_MOUSE_LL, &mouse_hook_proc,
                                GetModuleHandleW(nullptr), 0);
+    g_installed.store(g_hook != nullptr);
     g_running.store(g_hook != nullptr);
     if (!g_hook) {
         g_thread_id.store(0);
-        g_finished.store(true);
         return;
     }
 
     while (!g_stop_requested.load()) {
-        const BOOL result = GetMessageW(&msg, nullptr, 0, 0);
-        if (result <= 0) {
-            break;
+        // A timed wait rather than a blocking GetMessage: stop_mouse_hook()
+        // joins this thread, and a WM_QUIT posted before the message queue
+        // existed is lost. Waking up a few times a second guarantees the stop
+        // request is observed no matter when it arrives. The thread is idle
+        // otherwise, and the hook callback itself runs on Windows' hook
+        // dispatch, not on this loop.
+        const DWORD wait = MsgWaitForMultipleObjectsEx(
+            0, nullptr, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (wait != WAIT_OBJECT_0) {
+            continue;
         }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                g_stop_requested.store(true);
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
 
     UnhookWindowsHookEx(g_hook);
     g_hook = nullptr;
     g_running.store(false);
     g_thread_id.store(0);
-    g_finished.store(true);
 }
 
 }  // namespace
 
 bool start_mouse_hook(MouseEventSink sink) {
+    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+
     if (g_running.load()) {
         g_sink.store(sink, std::memory_order_release);
         return true;
     }
 
+    // A previous run that exited on its own (the hook failed to install, or
+    // the message loop ended) still owns a joinable thread. Reap it before
+    // spawning a new one.
+    if (g_thread.joinable()) {
+        g_thread.join();
+    }
+
     g_sink.store(sink, std::memory_order_release);
     g_stop_requested.store(false);
-    g_finished.store(false);
-    std::thread(hook_thread_main).detach();
+    g_installed.store(false);
+    g_thread = std::thread(hook_thread_main);
 
     for (int i = 0; i < 200; ++i) {
         if (g_running.load()) {
             return true;
         }
-        if (g_finished.load()) {
+        if (g_installed.load() && !g_running.load()) {
+            // The thread ran and failed to install the hook.
             break;
         }
         Sleep(5);
@@ -160,13 +189,18 @@ bool start_mouse_hook(MouseEventSink sink) {
 }
 
 void stop_mouse_hook() {
+    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+
     g_stop_requested.store(true);
     const DWORD thread_id = g_thread_id.load();
     if (thread_id != 0) {
         PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
-        for (int i = 0; i < 100 && g_running.load(); ++i) {
-            Sleep(5);
-        }
+    }
+    // Join rather than poll: the thread clears g_hook and g_running as its
+    // last act, so after the join the globals are settled and a subsequent
+    // start cannot race with the old thread's cleanup.
+    if (g_thread.joinable()) {
+        g_thread.join();
     }
     g_sink.store(nullptr, std::memory_order_release);
 }

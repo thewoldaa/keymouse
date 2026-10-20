@@ -44,6 +44,12 @@ target_include_directories(keymouse_tests PRIVATE
 )
 
 target_link_libraries(keymouse_tests PRIVATE keymouse_core)
+# The scan code translation lives in the Win32 layer, which the core must not
+# depend on. Tests run on Windows, so they may link it directly to verify the
+# physical key mapping.
+if(WIN32)
+    target_link_libraries(keymouse_tests PRIVATE keymouse_win32)
+endif()
 keymouse_set_warnings(keymouse_tests)
 
 if(KEYMOUSE_STATIC_RUNTIME)

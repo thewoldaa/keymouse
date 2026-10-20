@@ -126,6 +126,13 @@ struct AppConfig {
     // auto-click toggle, macro record/play/stop). Those are handled by the
     // engine outside the binding tables and must not be bound to an action.
     bool chord_is_reserved(const Chord& chord) const;
+
+    // Same check minus `ignore`, for a control-key picker that must compare its
+    // own chord against every *other* control key. Passing a control key's own
+    // current value to chord_is_reserved() would always report a collision
+    // with itself.
+    bool chord_is_reserved_except(const Chord& chord,
+                                  const Chord& ignore) const;
 };
 
 // Default configuration used on first run: the "desktop" preset.

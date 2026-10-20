@@ -66,14 +66,16 @@ void draw_bindings_tab(DashboardContext& context) {
             ImGui::TextUnformatted(widgets::action_label(tr, binding.action));
 
             ImGui::TableSetColumnIndex(1);
-            const ChordCaptureResult result = chord_capture("chord", binding.chord, tr);
+            const ChordCaptureResult result =
+                chord_capture("chord", binding.chord, tr, config.fn_layer_key);
             capturing |= result.state == ChordCaptureResult::State::Capturing;
             if (result.state == ChordCaptureResult::State::Accepted) {
                 binding.chord = result.chord;
                 *context.config_dirty = true;
             }
 
-            if (has_conflict(profile, binding.chord, i)) {
+            if (has_conflict(profile, binding.chord, i) ||
+                config.chord_is_reserved(binding.chord)) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning), "!");
                 if (ImGui::IsItemHovered()) {
@@ -143,7 +145,8 @@ void draw_bindings_tab(DashboardContext& context) {
     }
 
     ImGui::SameLine();
-    const ChordCaptureResult result = chord_capture("newchord", new_chord, tr);
+    const ChordCaptureResult result =
+        chord_capture("newchord", new_chord, tr, config.fn_layer_key);
     capturing |= result.state == ChordCaptureResult::State::Capturing;
     if (result.state == ChordCaptureResult::State::Accepted) {
         new_chord = result.chord;
@@ -151,7 +154,8 @@ void draw_bindings_tab(DashboardContext& context) {
 
     ImGui::SameLine();
     const bool can_add = new_chord.valid() &&
-                         !has_conflict(profile, new_chord, profile.bindings.size());
+                         !has_conflict(profile, new_chord, profile.bindings.size()) &&
+                         !config.chord_is_reserved(new_chord);
     ImGui::BeginDisabled(!can_add);
     if (ImGui::Button(tr.tr("bindings.add").data())) {
         Binding binding;
@@ -165,7 +169,8 @@ void draw_bindings_tab(DashboardContext& context) {
     ImGui::EndDisabled();
 
     if (new_chord.valid() &&
-        has_conflict(profile, new_chord, profile.bindings.size())) {
+        (has_conflict(profile, new_chord, profile.bindings.size()) ||
+         config.chord_is_reserved(new_chord))) {
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("bindings.conflict").data());
     }

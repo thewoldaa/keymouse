@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(KeyMouse
-    VERSION 0.3.0
+    VERSION 0.3.1
     DESCRIPTION "Control the mouse entirely from the keyboard"
     HOMEPAGE_URL "https://github.com/thewoldaa/keymouse"
     LANGUAGES CXX)

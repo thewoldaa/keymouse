@@ -13,6 +13,7 @@
   "common.yes": "Yes",
   "common.no": "No",
   "common.remove": "Remove",
+  "common.clear": "Clear",
   "common.cancel": "Cancel",
   "common.reset": "Reset",
   "common.close": "Close",
@@ -20,6 +21,7 @@
   "capture.unset": "(unset)",
   "capture.button_prompt": "Press a key...",
   "capture.instruction": "Press the key combination to bind.",
+  "capture.key_instruction": "Press the key to use.",
   "capture.escape_hint": "Escape cancels.",
   "capture.waiting": "...",
 

@@ -132,17 +132,24 @@ public:
     }
 
     void key(KeyId target, bool down) override {
-        const win32::KeyTranslation translation = win32::to_scan_code(target);
-        if (translation.key == key::Invalid) {
-            return;
-        }
         INPUT input{};
         input.type = INPUT_KEYBOARD;
-        input.ki.wScan = static_cast<WORD>(translation.scan);
-        input.ki.dwFlags = KEYEVENTF_SCANCODE;
-        if (translation.extended) {
-            input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+
+        const win32::KeyTranslation translation = win32::to_scan_code(target);
+        if (translation.key != key::Invalid) {
+            input.ki.wScan = static_cast<WORD>(translation.scan);
+            input.ki.dwFlags = KEYEVENTF_SCANCODE;
+            if (translation.extended) {
+                input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+            }
+        } else if (const auto vk = win32::to_virtual_key(target); vk.has_value()) {
+            // Media keys and the extended function keys have no scan code in
+            // our table; a virtual-key injection still reproduces them.
+            input.ki.wVk = static_cast<WORD>(*vk);
+        } else {
+            return;
         }
+
         if (!down) {
             input.ki.dwFlags |= KEYEVENTF_KEYUP;
         }
@@ -181,7 +188,8 @@ public:
         return tag_injections_ ? static_cast<ULONG_PTR>(kInjectionTag) : 0;
     }
 
-    bool tag_injections_ = false;
+    std::atomic<bool> tag_injections_{false};
+
     const char* name() const override { return "Win32 low-level hook"; }
 
     // Called from the hook callback.
@@ -251,12 +259,17 @@ private:
         }
 
         // Ctrl+Alt+Del and friends are delivered on the secure desktop and are
-        // never routed through this hook, but Win+L and similar are. Let the
-        // OS keep them.
-        if (info->vkCode == VK_LWIN || info->vkCode == VK_RWIN) {
-            if (GetAsyncKeyState(VK_TAB) || GetAsyncKeyState('L') || GetAsyncKeyState('D')) {
-                return CallNextHookEx(nullptr, code, wparam, lparam);
-            }
+        // never routed through this hook, but Win+L, Win+D, and Win+Tab are.
+        // Let the OS keep them: the user holds Win first and then presses the
+        // second key, so the decision has to be made when that second key
+        // arrives, not when Win itself does. GetAsyncKeyState must be masked
+        // with 0x8000; the low bit only means "pressed since the last call".
+        const bool win_down =
+            (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        if (win_down &&
+            (info->vkCode == VK_TAB || info->vkCode == 'L' || info->vkCode == 'D')) {
+            return CallNextHookEx(nullptr, code, wparam, lparam);
         }
 
         const bool is_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;

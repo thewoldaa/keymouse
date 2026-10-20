@@ -34,9 +34,10 @@ KeyId from_virtual_key(uint32_t vk);
 // Reverse mapping for the UI: shows which physical key the user pressed.
 KeyTranslation to_scan_code(KeyId key);
 
-// Returns true when this key must never be swallowed. Ctrl+Alt+Del cannot be
-// intercepted; swallowing the pieces of it produces a broken keyboard.
-bool is_protected_key(uint32_t vk);
+// Virtual-key code for injection when no scan code is known, or nullopt for
+// keys the backend cannot synthesize by scan code. Media keys have no stable
+// scan code, so they go out this way during macro playback.
+std::optional<uint32_t> to_virtual_key(KeyId key);
 
 }  // namespace win32
 }  // namespace km

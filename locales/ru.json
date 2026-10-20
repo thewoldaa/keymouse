@@ -13,6 +13,7 @@
   "common.yes": "Да",
   "common.no": "Нет",
   "common.remove": "Удалить",
+  "common.clear": "Очистить",
   "common.cancel": "Отмена",
   "common.reset": "Сброс",
   "common.close": "Закрыть",
@@ -20,6 +21,7 @@
   "capture.unset": "(не задано)",
   "capture.button_prompt": "Нажмите клавишу...",
   "capture.instruction": "Нажмите сочетание клавиш для привязки.",
+  "capture.key_instruction": "Нажмите нужную клавишу.",
   "capture.escape_hint": "Esc отменяет.",
   "capture.waiting": "...",
 

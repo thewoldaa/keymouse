@@ -29,11 +29,57 @@ TEST_CASE("matching works with full paths") {
     CHECK(match.matched);
 }
 
-TEST_CASE("profiles without match_exe are never auto-selected") {
+TEST_CASE("profiles without match_exe act as the fallback") {
     AppConfig config = make_default_config();
     config.profiles[0].match_exe = "";
 
+    // No profile claims the executable, so the only profile -- which has no
+    // application match -- is the fallback.
     const auto match = match_profile(config, "anything.exe");
+    CHECK(match.matched);
+    CHECK(match.index == 0);
+}
+
+TEST_CASE("leaving a matched application returns to the fallback profile") {
+    AppConfig config = make_default_config();
+    config.profiles.clear();
+
+    Profile fallback;
+    fallback.name = "Default";
+    fallback.match_exe = "";
+    Profile game;
+    game.name = "Game";
+    game.match_exe = "game.exe";
+
+    config.profiles.push_back(fallback);
+    config.profiles.push_back(game);
+
+    const auto in_game = match_profile(config, "game.exe");
+    CHECK(in_game.matched);
+    CHECK(in_game.index == 1);
+
+    // Focus moves to an application no profile claims: the fallback takes over
+    // instead of leaving the game profile active.
+    const auto elsewhere = match_profile(config, "explorer.exe");
+    CHECK(elsewhere.matched);
+    CHECK(elsewhere.index == 0);
+}
+
+TEST_CASE("with no fallback profile an unmatched application keeps the current one") {
+    AppConfig config = make_default_config();
+    config.profiles.clear();
+
+    Profile game;
+    game.name = "Game";
+    game.match_exe = "game.exe";
+    Profile editor;
+    editor.name = "Editor";
+    editor.match_exe = "editor.exe";
+
+    config.profiles.push_back(game);
+    config.profiles.push_back(editor);
+
+    const auto match = match_profile(config, "explorer.exe");
     CHECK_FALSE(match.matched);
 }
 
@@ -56,7 +102,7 @@ TEST_CASE("first matching profile wins") {
     CHECK(match.index == 0);
 }
 
-TEST_CASE("no match returns false") {
+TEST_CASE("no match returns false when no fallback exists") {
     AppConfig config = make_default_config();
     config.profiles[0].match_exe = "game.exe";
     CHECK_FALSE(match_profile(config, "other.exe").matched);

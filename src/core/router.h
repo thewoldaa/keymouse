@@ -24,6 +24,10 @@ struct RouteResult {
     bool active = false;
     // True when this is a state change worth notifying listeners about.
     bool changed = false;
+    // The binding mode that produced this result. The engine needs it to tell
+    // an instantaneous Tap from a Hold/Toggle state transition: a click bound
+    // in Hold mode must press the button and keep it down, not fire a tap.
+    BindMode mode = BindMode::Hold;
 };
 
 // Resolves physical key events into actions.
@@ -49,7 +53,12 @@ public:
     std::vector<Action> release_all();
 
     // True when at least one action is currently held or toggled on.
-    bool any_active() const { return !active_.empty(); }
+    bool any_active() const;
+
+    // True when `action` is held by any key or toggled on. Used for reference
+    // counting: two chords may be bound to the same action, and releasing one
+    // must not stop it while the other is still down.
+    bool is_action_active(Action action) const;
 
     // Snapshot of the active action set, for the dashboard.
     std::vector<Action> active_actions() const;
@@ -75,9 +84,11 @@ private:
     // the base key. A ModMask rather than the packed form, so the value can go
     // straight back into make_key without narrowing.
     std::unordered_map<KeyId, ModMask> held_keys_;
-    // Actions currently active, mapped to the physical key holding them.
+    // Held keys mapped to their action. Strictly Hold bindings: a toggled
+    // action lives in toggled_ only, so toggling it off from a second chord
+    // cannot leave a stale entry behind here.
     std::unordered_map<uint32_t, Action> active_;
-    // Actions toggled on, keyed by action.
+    // Toggle state, keyed by action. Shared by every chord bound to it.
     std::unordered_map<uint16_t, bool> toggled_;
 };
 

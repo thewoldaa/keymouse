@@ -19,7 +19,10 @@ struct ProfileMatch {
 //
 // Matching is case insensitive on the file name only ("game.exe"), not on the
 // full path, so a user does not have to re-pick a profile after moving an
-// installation. Profiles without a match_exe are never auto-selected.
+// installation. A profile with an empty match_exe is the fallback: when no
+// profile claims the executable, the first such profile is selected, so
+// leaving a matched application returns to the default bindings instead of
+// keeping the previous profile active.
 ProfileMatch match_profile(const AppConfig& config, std::string_view exe_name);
 
 // Returns the lowercased file name portion of a path. Handles both separators

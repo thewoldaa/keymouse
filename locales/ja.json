@@ -13,6 +13,7 @@
   "common.yes": "はい",
   "common.no": "いいえ",
   "common.remove": "削除",
+  "common.clear": "クリア",
   "common.cancel": "キャンセル",
   "common.reset": "リセット",
   "common.close": "閉じる",
@@ -20,6 +21,7 @@
   "capture.unset": "(未設定)",
   "capture.button_prompt": "キーを押してください...",
   "capture.instruction": "割り当てるキーの組み合わせを押してください。",
+  "capture.key_instruction": "使用するキーを押してください。",
   "capture.escape_hint": "Esc でキャンセルします。",
   "capture.waiting": "...",
 

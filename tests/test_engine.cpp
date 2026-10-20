@@ -96,7 +96,116 @@ Binding plain(Action action, KeyId key, BindMode mode = BindMode::Hold) {
     return binding;
 }
 
+Binding with_mods(Action action, ModMask mods, KeyId key, BindMode mode = BindMode::Hold) {
+    Binding binding = plain(action, key, mode);
+    binding.chord.mods = mods;
+    return binding;
+}
+
 }  // namespace
+
+TEST_CASE("a click bound in hold mode presses the button until release") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::ClickLeft, ModNone, key::KeyU, BindMode::Hold),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyU)));
+    engine.pump();
+
+    // Pressed, not tapped: exactly one down event and no up yet.
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].first == MouseButton::Left);
+    CHECK(backend.buttons[0].second);
+    CHECK(active(engine, Action::ClickLeft));
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyU)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK_FALSE(active(engine, Action::ClickLeft));
+}
+
+TEST_CASE("a click bound in toggle mode holds until pressed again") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::ClickRight, ModNone, key::KeyO, BindMode::Toggle),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyO)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].first == MouseButton::Right);
+    CHECK(backend.buttons[0].second);
+
+    // Releasing the key leaves the button down; the second press lets go.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyO)));
+    engine.pump();
+    CHECK(backend.buttons.size() == 1);
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyO)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK_FALSE(active(engine, Action::ClickRight));
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyO)));
+}
+
+TEST_CASE("release_all lets go of a button held by a click binding") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::ClickMiddle, ModNone, key::KeyP, BindMode::Hold),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyP)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].second);
+
+    // Disabling the engine must not leave the desktop in a drag.
+    engine.set_enabled(false);
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK_FALSE(active(engine, Action::ClickMiddle));
+}
+
+TEST_CASE("a tap click still fires once on press") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::ClickLeft, ModNone, key::KeyU, BindMode::Tap),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyU)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK(backend.buttons[0].second);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyU)));
+    engine.pump();
+    CHECK(backend.buttons.size() == 2);
+}
 
 TEST_CASE("mouse mode uses plain keys and keeps the chord table dormant") {
     FakeBackend backend;
@@ -302,7 +411,8 @@ TEST_CASE("absolute movement uses the screen bounds") {
 
 TEST_CASE("scheduled auto-click fires through the backend") {
     FakeBackend backend;
-    Engine engine(backend);
+    int64_t clock_us = 0;
+    Engine engine(backend, [&clock_us] { return clock_us; });
 
     AppConfig config = make_default_config();
     config.enabled = true;
@@ -319,8 +429,10 @@ TEST_CASE("scheduled auto-click fires through the backend") {
 
     engine.apply_config(config);
     engine.pump();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
+    // The scheduler runs on the engine's injected clock, so the test advances
+    // time instead of sleeping.
+    clock_us = 20'000;
     CHECK(engine.tick(0.016) >= 1);
     CHECK(engine.auto_click_fires() == 1);
 
@@ -732,4 +844,81 @@ TEST_CASE("events tagged as injected are ignored by the engine") {
     CHECK_FALSE(engine.on_input_event(tagged));
     CHECK(engine.stats().input_events == 1);
     CHECK(engine.active_mask() == 0u);
+}
+
+TEST_CASE("the panic key swallows its release when modifiers go first") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.panic_key = Chord{ModCtrl, key::Pause};
+    engine.apply_config(config);
+    engine.pump();
+    CHECK(engine.enabled());
+
+    // The chord is consumed, and so is the release -- even though Ctrl is let
+    // go before Pause, so the release reports no modifiers.
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::Pause, ModCtrl)));
+    CHECK_FALSE(engine.enabled());
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+
+    // A plain Pause was never consumed, so its release passes through.
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+}
+
+TEST_CASE("auto-repeat of a held panic key does not toggle back on") {
+    FakeBackend backend;
+    Engine engine(backend);
+    AppConfig config = make_default_config();
+    config.panic_key = Chord{ModNone, key::Pause};
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    CHECK_FALSE(engine.enabled());
+    // Windows repeats WM_KEYDOWN while the key is held; that must not flip the
+    // engine back on under the user's finger.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    CHECK_FALSE(engine.enabled());
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+
+    // The next deliberate press toggles it back on.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    CHECK(engine.enabled());
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+}
+
+TEST_CASE("the panic key stops a running macro recording and playback") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+
+    AppConfig config = make_default_config();
+    config.macros.record_keyboard = false;
+    engine.apply_config(config);
+    engine.pump();
+
+    engine.start_macro_recording(false);
+    engine.pump();
+    REQUIRE(engine.macro_recording());
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    engine.pump();
+    CHECK_FALSE(engine.macro_recording());
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+
+    auto macro = std::make_shared<Macro>();
+    MacroStep wait;
+    wait.type = MacroStepType::Wait;
+    wait.dt_ms = 60000;
+    macro->steps = {wait};
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    REQUIRE(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
 }

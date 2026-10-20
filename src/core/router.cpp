@@ -31,6 +31,7 @@ RouteResult Router::on_key_down(KeyId key, ModMask mods) {
         if (it != bindings_.end()) {
             result.swallow = it->second.swallow == SwallowMode::Swallow;
             result.action = it->second.action;
+            result.mode = it->second.mode;
             result.active = true;
         }
         return result;
@@ -45,13 +46,19 @@ RouteResult Router::on_key_down(KeyId key, ModMask mods) {
     const Entry& entry = it->second;
     result.action = entry.action;
     result.swallow = entry.swallow == SwallowMode::Swallow;
+    result.mode = entry.mode;
 
     switch (entry.mode) {
-        case BindMode::Hold:
+        case BindMode::Hold: {
+            // Reference count by action, not by key: a second chord bound to
+            // the same action is a no-op state-wise while the first still
+            // holds it.
+            const bool was_active = is_action_active(entry.action);
             active_[make_key(mods, key)] = entry.action;
             result.active = true;
-            result.changed = true;
+            result.changed = !was_active;
             break;
+        }
 
         case BindMode::Tap:
             // The action fires once on press. `active` stays false so the
@@ -65,11 +72,6 @@ RouteResult Router::on_key_down(KeyId key, ModMask mods) {
             state = !state;
             result.active = state;
             result.changed = true;
-            if (state) {
-                active_[make_key(mods, key)] = entry.action;
-            } else {
-                active_.erase(make_key(mods, key));
-            }
             break;
         }
     }
@@ -94,11 +96,15 @@ RouteResult Router::on_key_up(KeyId key) {
     const Entry& entry = it->second;
     result.action = entry.action;
     result.swallow = entry.swallow == SwallowMode::Swallow;
+    result.mode = entry.mode;
 
     if (entry.mode == BindMode::Hold) {
         active_.erase(make_key(mods, key));
-        result.active = false;
-        result.changed = true;
+        // Another chord may still hold the same action; if it does, nothing
+        // changed and the engine must keep the action running.
+        const bool still_active = is_action_active(entry.action);
+        result.active = still_active;
+        result.changed = !still_active;
     }
     // Tap and Toggle ignore key-up: tap already fired, toggle keeps its state.
     return result;
@@ -124,6 +130,28 @@ std::vector<Action> Router::release_all() {
     held_keys_.clear();
     toggled_.clear();
     return released;
+}
+
+bool Router::any_active() const {
+    if (!active_.empty()) {
+        return true;
+    }
+    for (const auto& [action_value, state] : toggled_) {
+        if (state) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Router::is_action_active(Action action) const {
+    for (const auto& [key, held_action] : active_) {
+        if (held_action == action) {
+            return true;
+        }
+    }
+    const auto it = toggled_.find(static_cast<uint16_t>(action));
+    return it != toggled_.end() && it->second;
 }
 
 std::vector<Action> Router::active_actions() const {

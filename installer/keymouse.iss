@@ -13,7 +13,7 @@
 ; only this line and CHANGELOG.md are manual.
 
 #define AppName "KeyMouse"
-#define AppVersion "0.3.0"
+#define AppVersion "0.3.1"
 #define AppId "{{7A2E4C1B-5D3F-4E8A-9C6B-2F1D0A7E5C93}"
 #define AppUrl "https://github.com/thewoldaa/keymouse"
 #define AppSource "..\build\Release"

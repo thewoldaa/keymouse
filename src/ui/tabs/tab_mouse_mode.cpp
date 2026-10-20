@@ -66,14 +66,18 @@ void draw_mouse_mode_tab(DashboardContext& context) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(tr.tr("mouse.toggle_key").data());
     ImGui::SameLine(220.0f);
-    const ChordCaptureResult toggle = chord_capture("mouse_toggle", mouse.toggle_key, tr);
+    const ChordCaptureResult toggle =
+        chord_capture("mouse_toggle", mouse.toggle_key, tr, config.fn_layer_key);
     capturing |= toggle.state == ChordCaptureResult::State::Capturing;
     if (toggle.state == ChordCaptureResult::State::Accepted) {
         mouse.toggle_key = toggle.chord;
         changed = true;
     }
     if (mouse.toggle_key == config.panic_key ||
-        mouse.toggle_key == config.auto_click.toggle_key) {
+        mouse.toggle_key == config.auto_click.toggle_key ||
+        mouse.toggle_key == config.macros.record_key ||
+        mouse.toggle_key == config.macros.play_key ||
+        mouse.toggle_key == config.macros.stop_key) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("mouse.reserved").data());
@@ -127,7 +131,8 @@ void draw_mouse_mode_tab(DashboardContext& context) {
             ImGui::TextUnformatted(widgets::action_label(tr, binding.action));
 
             ImGui::TableSetColumnIndex(1);
-            const ChordCaptureResult result = chord_capture("chord", binding.chord, tr);
+            const ChordCaptureResult result =
+                chord_capture("chord", binding.chord, tr, config.fn_layer_key);
             capturing |= result.state == ChordCaptureResult::State::Capturing;
             if (result.state == ChordCaptureResult::State::Accepted) {
                 binding.chord = result.chord;
@@ -191,7 +196,8 @@ void draw_mouse_mode_tab(DashboardContext& context) {
     }
 
     ImGui::SameLine();
-    const ChordCaptureResult result = chord_capture("mouse_new_chord", new_chord, tr);
+    const ChordCaptureResult result =
+        chord_capture("mouse_new_chord", new_chord, tr, config.fn_layer_key);
     capturing |= result.state == ChordCaptureResult::State::Capturing;
     if (result.state == ChordCaptureResult::State::Accepted) {
         new_chord = result.chord;

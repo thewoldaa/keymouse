@@ -41,7 +41,24 @@ struct ChordCaptureResult {
 //
 // `id` must be unique within the window. `tr` supplies the button and
 // instruction text.
-ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18n& tr);
+//
+// `fn_layer_key` is the physical key configured as the Fn layer. Passing it
+// lets the user record "Fn + X" chords: the key is treated like a modifier
+// instead of being accepted as the base key. Pass key::Invalid for pickers
+// where the Fn layer would be meaningless (such as the Fn layer picker itself).
+ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18n& tr,
+                                 KeyId fn_layer_key = key::Invalid);
+
+// Draws a button that turns into a single-key recorder. Unlike chord_capture()
+// this accepts modifier keys, which is what the macro step editor needs: a
+// KeyDown step for "Shift" is a real physical key, not a chord base.
+//
+// Escape cancels. `current` may be key::Invalid, which renders as "(unset)".
+struct KeyCaptureResult {
+    ChordCaptureResult::State state = ChordCaptureResult::State::Idle;
+    KeyId key = key::Invalid;
+};
+KeyCaptureResult key_capture(const char* id, KeyId current, const I18n& tr);
 
 // Renders a chord as a readable label. Returns the translated "(unset)" text
 // for invalid chords so the UI never shows an empty cell.

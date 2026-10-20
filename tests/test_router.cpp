@@ -187,3 +187,99 @@ TEST_CASE("reset clears everything") {
     CHECK_FALSE(router.any_active());
     CHECK(router.on_key_down(key::ArrowUp, ModNone).action == Action::None);
 }
+
+TEST_CASE("two keys bound to the same hold action reference count") {
+    Router router;
+    router.set_bindings({
+        hold(Action::MoveUp, ModNone, key::ArrowUp),
+        hold(Action::MoveUp, ModNone, key::KeyW),
+    }, key::Menu);
+
+    const RouteResult first = router.on_key_down(key::ArrowUp, ModNone);
+    CHECK(first.active);
+    CHECK(first.changed);
+
+    // The second key starts nothing new: the action is already running.
+    const RouteResult second = router.on_key_down(key::KeyW, ModNone);
+    CHECK(second.active);
+    CHECK_FALSE(second.changed);
+
+    // Releasing one still leaves the other holding the action.
+    const RouteResult up = router.on_key_up(key::ArrowUp);
+    CHECK(up.active);
+    CHECK_FALSE(up.changed);
+    CHECK(router.any_active());
+
+    const RouteResult last = router.on_key_up(key::KeyW);
+    CHECK_FALSE(last.active);
+    CHECK(last.changed);
+    CHECK_FALSE(router.any_active());
+}
+
+TEST_CASE("two keys bound to the same toggle share one state") {
+    Router router;
+    router.set_bindings({
+        toggle(Action::DragLock, ModNone, key::KeyG),
+        toggle(Action::DragLock, ModNone, key::KeyH),
+    }, key::Menu);
+
+    CHECK(router.on_key_down(key::KeyG, ModNone).active);
+    router.on_key_up(key::KeyG);
+
+    // The second chord turns the shared toggle off, and nothing stale is left
+    // behind for the first one.
+    const RouteResult off = router.on_key_down(key::KeyH, ModNone);
+    CHECK_FALSE(off.active);
+    router.on_key_up(key::KeyH);
+    CHECK_FALSE(router.any_active());
+    CHECK(router.active_actions().empty());
+}
+
+TEST_CASE("toggle state does not depend on which key set it") {
+    Router router;
+    router.set_bindings({
+        toggle(Action::DragLock, ModNone, key::KeyG),
+        toggle(Action::DragLock, ModNone, key::KeyH),
+    }, key::Menu);
+
+    // Press G (on), release G, press H (off), release H. The action must not
+    // still be reported as active after the second press, which is what the
+    // stale active_ entry used to cause.
+    router.on_key_down(key::KeyG, ModNone);
+    router.on_key_up(key::KeyG);
+    const RouteResult second = router.on_key_down(key::KeyH, ModNone);
+    CHECK_FALSE(second.active);
+    router.on_key_up(key::KeyH);
+
+    const RouteResult third = router.on_key_down(key::KeyG, ModNone);
+    CHECK(third.active);
+}
+
+TEST_CASE("a hold and a toggle on the same action both count as active") {
+    Router router;
+    router.set_bindings({
+        hold(Action::MoveUp, ModNone, key::ArrowUp),
+        toggle(Action::MoveUp, ModNone, key::KeyG),
+    }, key::Menu);
+
+    router.on_key_down(key::KeyG, ModNone);
+    router.on_key_up(key::KeyG);
+    CHECK(router.is_action_active(Action::MoveUp));
+
+    // The hold key is pressed and released while the toggle keeps the action
+    // on; releasing it must not report a state change.
+    router.on_key_down(key::ArrowUp, ModNone);
+    const RouteResult up = router.on_key_up(key::ArrowUp);
+    CHECK(up.active);
+    CHECK_FALSE(up.changed);
+}
+
+TEST_CASE("route results carry the binding mode") {
+    Router router = make_router();
+
+    CHECK(router.on_key_down(key::ArrowUp, ModNone).mode == BindMode::Hold);
+    router.on_key_up(key::ArrowUp);
+    CHECK(router.on_key_down(key::Numpad0, ModCtrl).mode == BindMode::Tap);
+    router.on_key_up(key::Numpad0);
+    CHECK(router.on_key_down(key::NumpadDecimal, ModFn).mode == BindMode::Toggle);
+}

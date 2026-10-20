@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
+A correctness release for 0.3.0, driven by the code audit in issue #2. No
+features were added and no configuration schema changed; existing `config.json`
+and `.kmacro` files load as they are.
+
+### Fixed
+
+- **Fn layer chords can be recorded again.** The chord recorder treated the
+  configured Fn layer key as an ordinary base key, so pressing `Fn` and then
+  another key recorded the Fn key alone. It now counts the Fn layer key as a
+  modifier and waits for the real base key. Bindings, mouse mode, auto-click,
+  macro hotkeys, and macro control keys all pass the configured key.
+- **Macro `KeyDown`/`KeyUp` steps show and accept modifier keys.** The step
+  editor reused the chord recorder, which rejects modifier keys, so a recorded
+  `Shift` step displayed as `(unset)` and could not be edited. It now uses a
+  dedicated single-key recorder that accepts any mapped key.
+- **Macro hotkeys can be cleared.** An optional hotkey previously could not be
+  unset once assigned; a Clear button next to it now resets it.
+- **Click actions honour hold and toggle modes.** A mouse click bound to `Hold`
+  or `Toggle` fired a tap on release instead of pressing the button on press.
+  Clicks now track the injected button state; held buttons are released on
+  disable, focus loss, session lock, and shutdown.
+- **Releasing one of two keys bound to the same action no longer stops it.**
+  Held actions are reference counted by action, and a toggle turned off from a
+  second chord no longer leaves a stale active entry behind.
+- **The panic key release is always swallowed.** Releasing the modifiers before
+  the panic key used to let the key-up reach the foreground application. The
+  press state is now tracked like the other mode toggles.
+- **The panic key stops macro recording and playback**, and auto-repeat of a
+  held panic key no longer toggles the engine back on.
+- **The reserved-key warning on macro control keys is gone.** The check compared
+  each control key against itself and always reported a collision.
+- **The Bindings tab flags reserved chords**, and the mouse-mode and auto-click
+  toggles now check all control keys, not just two of them.
+- **Leaving a matched application returns to the fallback profile.** A profile
+  with no application match now takes over when no other profile claims the
+  foreground window, instead of the last matched profile staying active.
+- **Automatic profile switches no longer rewrite the configuration.** The switch
+  is applied once and is not persisted, so an Alt-Tab no longer applies the
+  config twice and writes `config.json`.
+- **`Win+Tab`, `Win+L`, and `Win+D` are passed through correctly.** The hook
+  checked the asynchronous key state of the wrong keys and without the `0x8000`
+  mask, so the chords were not reliably left to Windows.
+- **The mouse hook thread is joined instead of detached.** A quick stop and
+  restart could race the previous thread's cleanup against the new thread's
+  initialization.
+- **`PrintScreen` and `F13`..`F24` play back in macros.** The scan code table
+  mapped `F13` to 0x59 and shifted the rest of the range by one, so recorded
+  function keys replayed as the wrong key; `PrintScreen`, `F23`, and `F24` had
+  no mapping at all. Keys without a scan code now fall back to virtual key
+  injection.
+- **Exported macros get a `.kmacro` extension.** The save dialog hardcoded
+  `.json`, so a typed file name without an extension produced a file the
+  importer would reject.
+
+### Changed
+
+- The injection tag flag is atomic, as the backend header already documented.
+- The engine's auto-click scheduler uses the engine's injected clock rather
+  than a separate `steady_clock`, so tests can drive it deterministically and
+  all timing shares one timeline.
+- The unused `make_native_backend()` declaration and `is_protected_key()`
+  helper are gone.
+
+### Performance
+
+- Publishing an unchanged binding list no longer allocates and retains another
+  32 KB table, and macro hotkey tables are deduplicated the same way. Dragging
+  a slider in the Movement or Macros tab used to allocate tens of kilobytes per
+  frame.
+- The foreground executable is no longer queried when nothing consumes it: the
+  window is hidden, automatic profile switching is off or has fewer than two
+  profiles, and no enabled auto-click task is filtered by application.
+
+### Tests
+
+- 179 unit tests, up from 155: click hold and toggle, button release on
+  disable, hold reference counting, shared toggle state, panic release and
+  auto-repeat, panic stopping a recording, profile fallback, duplicate table
+  publication, and the `PrintScreen` and `F13`..`F24` scan code round trips.
+
 ## [0.3.0] - 2026-10-19
 
 Adds the macro subsystem: record mouse input, replay it with loops and speed
@@ -183,7 +265,8 @@ First release. Windows 10 and later, x64, no administrator rights required.
 - Media keys (play, volume, and the like) cannot be bound: Dear ImGui 1.93 has
   no key identifiers for them. Their normal functions are unaffected.
 
-[Unreleased]: https://github.com/thewoldaa/keymouse/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thewoldaa/keymouse/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/thewoldaa/keymouse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/thewoldaa/keymouse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/thewoldaa/keymouse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/thewoldaa/keymouse/releases/tag/v0.1.0

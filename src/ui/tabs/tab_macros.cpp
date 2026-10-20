@@ -276,13 +276,22 @@ void draw_macros_tab(DashboardContext& context) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", tr.tr("macro.hotkey").data());
         ImGui::SameLine();
-        const ChordCaptureResult captured = chord_capture("hotkey", entry.hotkey, tr);
+        const ChordCaptureResult captured = chord_capture("hotkey", entry.hotkey, tr,
+                                                          config.fn_layer_key);
         if (captured.state == ChordCaptureResult::State::Capturing) {
             capturing = true;
         }
         if (captured.state == ChordCaptureResult::State::Accepted &&
             context.macro_set_hotkey) {
             context.macro_set_hotkey(entry.id, captured.chord);
+        }
+        // A hotkey is optional, so it needs a way back to "unset".
+        if (entry.hotkey.valid()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr.tr("common.clear").data()) &&
+                context.macro_set_hotkey) {
+                context.macro_set_hotkey(entry.id, Chord{ModNone, key::Invalid});
+            }
         }
 
         ImGui::PopID();
@@ -457,14 +466,16 @@ void draw_macros_tab(DashboardContext& context) {
                         }
                         case MacroStepType::KeyDown:
                         case MacroStepType::KeyUp: {
-                            const ChordCaptureResult key_capture = chord_capture(
-                                "key", Chord{ModNone, step.key}, tr);
-                            if (key_capture.state == ChordCaptureResult::State::Capturing) {
+                            // Raw key, not a chord: modifier keys are valid
+                            // steps, so this uses the single-key recorder.
+                            const KeyCaptureResult captured_key =
+                                key_capture("key", step.key, tr);
+                            if (captured_key.state ==
+                                ChordCaptureResult::State::Capturing) {
                                 capturing = true;
                             }
-                            if (key_capture.state ==
-                                ChordCaptureResult::State::Accepted) {
-                                step.key = key_capture.chord.key;
+                            if (captured_key.state == ChordCaptureResult::State::Accepted) {
+                                step.key = captured_key.key;
                                 edit.dirty = true;
                             }
                             break;
@@ -560,7 +571,8 @@ void draw_macros_tab(DashboardContext& context) {
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted(label);
                 ImGui::SameLine();
-                const ChordCaptureResult result = chord_capture(id, chord, tr);
+                const ChordCaptureResult result =
+                    chord_capture(id, chord, tr, config.fn_layer_key);
                 if (result.state == ChordCaptureResult::State::Capturing) {
                     capturing = true;
                 }
@@ -568,7 +580,10 @@ void draw_macros_tab(DashboardContext& context) {
                     chord = result.chord;
                     config_changed = true;
                 }
-                if (!chord.valid() || config.chord_is_reserved(chord)) {
+                // Compare against every control key except this one's own
+                // value, which would otherwise always collide with itself and
+                // leave the warning permanently on screen.
+                if (!chord.valid() || config.chord_is_reserved_except(chord, chord)) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                                        "%s", tr.tr("macro.reserved").data());

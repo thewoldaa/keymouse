@@ -396,6 +396,16 @@ bool AppConfig::chord_is_reserved(const Chord& chord) const {
            chord == macros.play_key || chord == macros.stop_key;
 }
 
+bool AppConfig::chord_is_reserved_except(const Chord& chord,
+                                         const Chord& ignore) const {
+    const auto collides = [&chord, &ignore](const Chord& other) {
+        return other != ignore && chord == other;
+    };
+    return collides(panic_key) || collides(mouse_mode.toggle_key) ||
+           collides(auto_click.toggle_key) || collides(macros.record_key) ||
+           collides(macros.play_key) || collides(macros.stop_key);
+}
+
 std::vector<Binding> make_mouse_mode_bindings() {
     return {
         make_binding(Action::MoveUp, ModNone, key::KeyI),

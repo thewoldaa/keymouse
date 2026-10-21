@@ -118,21 +118,36 @@ struct AppConfig {
     Profile& active();
     const Profile& active() const;
 
-    // True when `chord` is used by any profile binding or by a mouse-mode
-    // binding. Used to keep the panic key and the toggle keys free.
-    bool chord_in_use(const Chord& chord, const std::string& ignore_profile = {}) const;
+    // True when `chord` is used by any profile binding, by a mouse-mode
+    // binding, or by a macro hotkey. Used to keep the panic key and the toggle
+    // keys free. `ignore_profile` skips one profile; `ignore_macro_id` skips
+    // one macro, so a macro's own hotkey does not count as a conflict with
+    // itself.
+    bool chord_in_use(const Chord& chord, const std::string& ignore_profile = {},
+                      const std::string& ignore_macro_id = {}) const;
 
     // True when the chord is a mode control key (panic, mouse-mode toggle,
     // auto-click toggle, macro record/play/stop). Those are handled by the
     // engine outside the binding tables and must not be bound to an action.
     bool chord_is_reserved(const Chord& chord) const;
 
-    // Same check minus `ignore`, for a control-key picker that must compare its
-    // own chord against every *other* control key. Passing a control key's own
-    // current value to chord_is_reserved() would always report a collision
-    // with itself.
-    bool chord_is_reserved_except(const Chord& chord,
-                                  const Chord& ignore) const;
+    // Identifies which control key a picker owns, so its own current value is
+    // skipped when the chord is compared against the other control keys.
+    // Comparing by value cannot express "every slot except this one": the
+    // chord being checked is usually that slot's own value.
+    enum class ControlKey {
+        Panic,
+        MouseToggle,
+        AutoClickToggle,
+        MacroRecord,
+        MacroPlay,
+        MacroStop,
+    };
+
+    // True when the chord collides with a control key other than `own`. A
+    // control-key picker must compare against the *other* control keys only;
+    // chord_is_reserved() would always report a collision with itself.
+    bool chord_is_reserved_except(const Chord& chord, ControlKey own) const;
 };
 
 // Default configuration used on first run: the "desktop" preset.

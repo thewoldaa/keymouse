@@ -223,17 +223,30 @@ private:
         hook_ready_.store(true);
 
         while (!stop_requested_.load()) {
-            const BOOL result = GetMessageW(&msg, nullptr, 0, 0);
-            if (result <= 0) {
-                break;
+            // A timed wait rather than a blocking GetMessage: stop() joins this
+            // thread, and a WM_QUIT posted before the message queue existed is
+            // lost. Waking a few times a second guarantees the stop request is
+            // observed no matter when it arrives. The thread is idle otherwise;
+            // the hook callback itself runs on Windows' hook dispatch.
+            const DWORD wait = MsgWaitForMultipleObjectsEx(
+                0, nullptr, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (wait != WAIT_OBJECT_0) {
+                continue;
             }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    stop_requested_.store(true);
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
 
         UnhookWindowsHookEx(hook_);
         hook_ = nullptr;
         running_.store(false);
+        hook_thread_id_.store(0);
     }
 
     static LRESULT CALLBACK hook_proc(int code, WPARAM wparam, LPARAM lparam) {

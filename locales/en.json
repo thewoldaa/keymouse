@@ -263,6 +263,7 @@
   "macro.exported": "Macro exported.",
   "macro.export_failed": "Could not write the macro file.",
   "macro.load_failed": "Could not read the macro file.",
+  "macro.empty_recording": "The recording was stopped before it captured anything.",
 
   "time.seconds": "sec",
   "time.minutes": "min",

@@ -1,4 +1,4 @@
-# KeyMouse
+﻿# KeyMouse
 
 Control the mouse entirely from the keyboard.
 
@@ -21,7 +21,7 @@ It is built for two groups:
 
 ## Status
 
-Version 0.3.1. Windows only. The core is platform independent so Linux and
+Version 0.3.2. Windows only. The core is platform independent so Linux and
 macOS backends can be added without rewriting the logic; see
 [docs/PORTING.md](docs/PORTING.md).
 
@@ -65,11 +65,11 @@ Task Manager unless KeyMouse itself is run elevated.
 
 Each release is published in two forms:
 
-- **`KeyMouse-0.3.1-setup.exe`** — per-user install, no administrator prompt and
+- **`KeyMouse-0.3.2-setup.exe`** — per-user install, no administrator prompt and
   no `Program Files`. The wizard speaks English, Russian, Japanese, and
   Indonesian, and copies the documentation next to the application. Uninstalling
   asks whether to keep your settings.
-- **`KeyMouse-0.3.1-win64.zip`** — portable. Unpack it anywhere and run
+- **`KeyMouse-0.3.2-win64.zip`** — portable. Unpack it anywhere and run
   `KeyMouse.exe`; nothing is written outside `%LOCALAPPDATA%\KeyMouse`.
 
 Both are unsigned, so Windows SmartScreen may warn the first time.
@@ -320,14 +320,15 @@ the app always starts.
 
 ## Roadmap
 
-0.3.1 is a correctness release for the 0.3.0 macro update: it fixes chord
-recording for the Fn layer, click bindings in hold and toggle mode, the panic
-key, per-application profile fallback, key scan codes for macro playback, and
-two memory and idle-cost issues found in review. 0.3.0 added the macro
-recorder, player, editor, and library on top of the 0.2.0 feature set. The hook,
-movement, clicks, scroll, drag lock, precision and turbo, mouse mode, the
-auto-click scheduler, profiles and exchange, the panic key, four languages, the
-installer, the portable zip, and the test suite remain.
+0.3.2 is a second correctness release driven by the post-0.3.1 audit: it fixes
+a dead reserved-key check, auto-repeat leaking past a chorded control key,
+config reloads dropping held movement keys, drag lock and left-click fighting
+over the same button, media-key scan codes, and automatic profile switching
+overriding the profile being edited. 0.3.1 fixed chord recording for the Fn
+layer, click bindings in hold and toggle mode, the panic key, per-application
+profile fallback, key scan codes for macro playback, and two memory and
+idle-cost issues found in review. 0.3.0 added the macro recorder, player,
+editor, and library on top of the 0.2.0 feature set.
 
 Next:
 

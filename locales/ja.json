@@ -263,6 +263,7 @@
   "macro.exported": "マクロを書き出しました。",
   "macro.export_failed": "マクロファイルを書き込めませんでした。",
   "macro.load_failed": "マクロファイルを読み込めませんでした。",
+  "macro.empty_recording": "何も記録される前に録画が停止されました。",
 
   "time.seconds": "秒",
   "time.minutes": "分",

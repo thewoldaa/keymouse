@@ -232,6 +232,13 @@ public:
     void request_macro_stop() {
         macro_stop_requested_.store(true, std::memory_order_relaxed);
     }
+    // Stops a recording without handing the partial macro back. Used when the
+    // session ends or the panic key aborts the recording: the fragment is not
+    // something the user meant to keep, and the application would otherwise
+    // store an empty or truncated .kmacro file.
+    void cancel_macro_recording() {
+        record_cancel_requested_.store(true, std::memory_order_relaxed);
+    }
     MacroPlayerState macro_player_state() const {
         return player_state_.load(std::memory_order_relaxed);
     }
@@ -285,6 +292,9 @@ private:
     // Presses or releases an injected mouse button, tracking which buttons are
     // held so release_all() can let go of them. `active` is the route state.
     void apply_click(MouseButton button, bool active, BindMode mode);
+    // Presses or releases one physical button to match every reason it should
+    // be down (Hold/Toggle binding, or the drag lock for the left button).
+    void update_button(MouseButton button);
     void apply_drag_lock(bool engaged);
     void refresh_active_mask();
     void fire_auto_click(AutoClickAction action);
@@ -354,6 +364,8 @@ private:
     std::atomic<uint8_t> panic_mods_{ModNone};
     // True while a panic press that was consumed is physically down, so the
     // matching release is swallowed even if its modifiers were released first.
+    // Auto-repeat is identified by the base key alone, because Windows repeats
+    // the key-down with whatever modifiers are down at that moment.
     std::atomic<bool> panic_down_{false};
 
     // Mouse mode. The toggle is handled on the hook thread, like the panic key,
@@ -403,8 +415,15 @@ private:
     std::atomic<bool> recording_keyboard_{false};
     std::atomic<bool> record_start_requested_{false};
     std::atomic<bool> record_stop_requested_{false};
+    // Abort without handing the partial macro back (panic key, session lock).
+    std::atomic<bool> record_cancel_requested_{false};
     std::atomic<uint64_t> recording_steps_{0};
     std::atomic<double> macro_tolerance_px_{3.0};
+    // Engine thread only. Last cursor position seen while a macro was playing,
+    // used to tell a real mouse move from sensor jitter.
+    bool have_playback_point_ = false;
+    int32_t playback_x_ = 0;
+    int32_t playback_y_ = 0;
     std::atomic<bool> recorded_macro_ready_{false};
     std::mutex recorded_macro_mutex_;
     std::optional<Macro> recorded_macro_;
@@ -439,6 +458,10 @@ private:
     // Bit per MouseButton that was pressed by a Hold or Toggle click binding
     // and has not been released yet. Bounded by the five buttons.
     std::atomic<uint32_t> held_buttons_{0};
+    // Bit per MouseButton that is physically down as a result of held_buttons_
+    // or the drag lock. Single source of truth for the injected button state,
+    // so the drag lock and a ClickLeft binding cannot release each other.
+    std::atomic<uint32_t> buttons_down_{0};
 
     // Counters, written from the hook thread and the engine thread.
     struct Counters {
@@ -460,6 +483,11 @@ private:
     double scroll_lines_per_second_ = 8.0;
     double scroll_remainder_ = 0.0;
     bool auto_click_initialized_ = false;
+    // The binding lists the routers were last built from. apply_config() runs
+    // for every slider drag and speed key; only a change here justifies
+    // rebuilding the tables and releasing held actions.
+    std::vector<Binding> applied_bindings_;
+    std::vector<Binding> applied_mouse_bindings_;
 };
 
 }  // namespace km

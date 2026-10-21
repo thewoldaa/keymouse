@@ -52,6 +52,12 @@ public:
     // effects (for example, releasing a drag lock).
     std::vector<Action> release_all();
 
+    // Forgets which physical keys are down without touching the bindings.
+    // release_all() keeps that state on purpose so a still-held key's
+    // auto-repeat is not mistaken for a fresh press; a session change is the
+    // one case where the key-ups were dropped by Windows and the state must go.
+    void forget_held_keys();
+
     // True when at least one action is currently held or toggled on.
     bool any_active() const;
 

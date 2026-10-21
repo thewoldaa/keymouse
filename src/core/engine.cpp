@@ -101,9 +101,11 @@ void Engine::apply_config(const AppConfig& config) {
     }
     config_pending_.store(true, std::memory_order_release);
 
-    // Held keys refer to the old binding set; the engine thread releases them
-    // when it applies the new one.
-    release_requested_.store(true, std::memory_order_relaxed);
+    // Held keys refer to the old binding set, so the engine thread releases
+    // them when it applies a configuration whose bindings actually changed. The
+    // comparison happens there, against the router's current table, because
+    // this method also runs on every slider drag and SpeedUp/SpeedDown press;
+    // releasing on those would halt cursor movement under a held key.
 }
 
 void Engine::set_enabled(bool enabled) {
@@ -137,19 +139,29 @@ bool Engine::on_input_event(const InputEvent& event) {
     // "stop everything now" means when the keyboard is misbehaving.
     const KeyId panic_key = static_cast<KeyId>(
         panic_key_.load(std::memory_order_relaxed));
-    if (event.key == panic_key) {
+    if (panic_key != key::Invalid && event.key == panic_key) {
         const ModMask panic_mods = panic_mods_.load(std::memory_order_relaxed);
-        if (event.type == InputEvent::Type::KeyDown && event.mods == panic_mods) {
-            // Auto-repeat of a held panic key must not toggle the engine back
-            // on. Only the first press counts.
-            if (!panic_down_.exchange(true, std::memory_order_relaxed)) {
+        if (event.type == InputEvent::Type::KeyDown) {
+            if (panic_down_.load(std::memory_order_relaxed)) {
+                // OS auto-repeat of the press that was already consumed. The
+                // repeat arrives with whatever modifiers are down now, which
+                // may be none because the user let go of them first; swallow it
+                // by base key alone, or the application sees a key-down whose
+                // matching key-up is swallowed below.
+                return true;
+            }
+            if (event.mods == panic_mods) {
+                panic_down_.store(true, std::memory_order_relaxed);
                 enabled_.store(!enabled_.load(std::memory_order_relaxed),
                                std::memory_order_relaxed);
                 release_requested_.store(true, std::memory_order_relaxed);
                 macro_stop_requested_.store(true, std::memory_order_relaxed);
-                record_stop_requested_.store(true, std::memory_order_relaxed);
+                // A recording aborted this way is not a macro the user meant to
+                // keep, so it is discarded rather than stored.
+                record_cancel_requested_.store(true, std::memory_order_relaxed);
+                return true;
             }
-            return true;
+            return false;
         }
         // Swallow the release of a press that was consumed, even when its
         // modifiers were let go first: the application saw the key go down and
@@ -161,19 +173,24 @@ bool Engine::on_input_event(const InputEvent& event) {
         }
     }
 
-    // Break stops macro playback no matter what state the engine is in. It
-    // stays usable as the panic key above.
-    if (event.key == key::Pause && event.type == InputEvent::Type::KeyDown) {
-        macro_stop_requested_.store(true, std::memory_order_relaxed);
-    }
-
     // Mouse mode and the auto-click switch are handled here, like the panic
     // key, so they work while the dashboard is hidden and are never delivered
     // to the foreground application.
     const bool is_down = event.type == InputEvent::Type::KeyDown;
     const bool is_up = event.type == InputEvent::Type::KeyUp;
 
-    if (event.key == mouse_toggle_key_.load(std::memory_order_relaxed)) {
+    const auto control_repeat = [is_down](std::atomic<bool>& down,
+                                          KeyId control_key, KeyId event_key) {
+        return is_down && down.load(std::memory_order_relaxed) &&
+               control_key != key::Invalid && event_key == control_key;
+    };
+
+    const KeyId mouse_toggle_key =
+        static_cast<KeyId>(mouse_toggle_key_.load(std::memory_order_relaxed));
+    if (control_repeat(mouse_toggle_down_, mouse_toggle_key, event.key)) {
+        return true;
+    }
+    if (event.key == mouse_toggle_key) {
         if (is_down && event.mods == mouse_toggle_mods_.load(std::memory_order_relaxed)) {
             if (!mouse_toggle_down_.exchange(true, std::memory_order_relaxed)) {
                 if (mouse_hold_.load(std::memory_order_relaxed)) {
@@ -204,7 +221,12 @@ bool Engine::on_input_event(const InputEvent& event) {
         }
     }
 
-    if (event.key == auto_click_toggle_key_.load(std::memory_order_relaxed)) {
+    const KeyId auto_click_toggle_key =
+        static_cast<KeyId>(auto_click_toggle_key_.load(std::memory_order_relaxed));
+    if (control_repeat(auto_click_toggle_down_, auto_click_toggle_key, event.key)) {
+        return true;
+    }
+    if (event.key == auto_click_toggle_key) {
         if (is_down && event.mods == auto_click_toggle_mods_.load(std::memory_order_relaxed)) {
             if (!auto_click_toggle_down_.exchange(true, std::memory_order_relaxed)) {
                 auto_click_enabled_.store(
@@ -222,7 +244,12 @@ bool Engine::on_input_event(const InputEvent& event) {
     // Macro record/play/stop. One-shot chords with the same swallow pattern as
     // the mode toggles: only the release of a press that was consumed is
     // swallowed, so a plain "R" never loses its key-up.
-    if (event.key == macro_record_key_.load(std::memory_order_relaxed)) {
+    const KeyId macro_record_key =
+        static_cast<KeyId>(macro_record_key_.load(std::memory_order_relaxed));
+    if (control_repeat(macro_record_down_, macro_record_key, event.key)) {
+        return true;
+    }
+    if (event.key == macro_record_key) {
         if (is_down && event.mods == macro_record_mods_.load(std::memory_order_relaxed)) {
             if (!macro_record_down_.exchange(true, std::memory_order_relaxed)) {
                 macro_record_toggle_requested_.store(true, std::memory_order_relaxed);
@@ -234,7 +261,12 @@ bool Engine::on_input_event(const InputEvent& event) {
         }
     }
 
-    if (event.key == macro_play_key_.load(std::memory_order_relaxed)) {
+    const KeyId macro_play_key =
+        static_cast<KeyId>(macro_play_key_.load(std::memory_order_relaxed));
+    if (control_repeat(macro_play_down_, macro_play_key, event.key)) {
+        return true;
+    }
+    if (event.key == macro_play_key) {
         if (is_down && event.mods == macro_play_mods_.load(std::memory_order_relaxed)) {
             if (!macro_play_down_.exchange(true, std::memory_order_relaxed)) {
                 macro_play_pause_requested_.store(true, std::memory_order_relaxed);
@@ -246,7 +278,12 @@ bool Engine::on_input_event(const InputEvent& event) {
         }
     }
 
-    if (event.key == macro_stop_key_.load(std::memory_order_relaxed)) {
+    const KeyId macro_stop_key =
+        static_cast<KeyId>(macro_stop_key_.load(std::memory_order_relaxed));
+    if (control_repeat(macro_stop_down_, macro_stop_key, event.key)) {
+        return true;
+    }
+    if (event.key == macro_stop_key) {
         if (is_down && event.mods == macro_stop_mods_.load(std::memory_order_relaxed)) {
             if (!macro_stop_down_.exchange(true, std::memory_order_relaxed)) {
                 macro_stop_requested_.store(true, std::memory_order_relaxed);
@@ -262,15 +299,21 @@ bool Engine::on_input_event(const InputEvent& event) {
     // the hook thread only records which entry fired and the UI thread resolves
     // the id from the retained table.
     if (is_down) {
+        const KeyId consumed = static_cast<KeyId>(
+            macro_hotkey_key_.load(std::memory_order_relaxed));
+        if (consumed != key::Invalid && event.key == consumed) {
+            // Auto-repeat of a consumed hotkey press, whether or not its
+            // modifiers are still down. Swallowing it keeps the application
+            // from seeing a key-down whose key-up is swallowed below.
+            return true;
+        }
         const MacroHotkeyTable* table = macro_hotkey_store_.current();
         size_t index = 0;
         if (table != nullptr && table->find(event.mods, event.key, index)) {
-            if (macro_hotkey_key_.exchange(event.key, std::memory_order_relaxed) ==
-                key::Invalid) {
-                macro_hotkey_table_seen_.store(table, std::memory_order_release);
-                macro_hotkey_index_.store(index, std::memory_order_relaxed);
-                macro_hotkey_requested_.store(true, std::memory_order_relaxed);
-            }
+            macro_hotkey_key_.store(event.key, std::memory_order_relaxed);
+            macro_hotkey_table_seen_.store(table, std::memory_order_release);
+            macro_hotkey_index_.store(index, std::memory_order_relaxed);
+            macro_hotkey_requested_.store(true, std::memory_order_relaxed);
             return true;
         }
     } else if (is_up &&
@@ -444,8 +487,19 @@ void Engine::apply_pending_config() {
     motion_config_ = snapshot->motion;
     motion_.configure(motion_config_);
     scroll_lines_per_second_ = snapshot->scroll_lines_per_second;
-    router_.set_bindings(snapshot->bindings, snapshot->fn_layer_key);
-    mouse_router_.set_bindings(snapshot->mouse_bindings, snapshot->fn_layer_key);
+
+    // Only a binding change invalidates the keys the routers are tracking. A
+    // speed slider, a tolerance change, or a SpeedUp/SpeedDown press arrives
+    // through the same path and must not release a held movement key.
+    const bool bindings_changed =
+        snapshot->bindings != applied_bindings_ ||
+        snapshot->mouse_bindings != applied_mouse_bindings_;
+    if (bindings_changed) {
+        applied_bindings_ = snapshot->bindings;
+        applied_mouse_bindings_ = snapshot->mouse_bindings;
+        router_.set_bindings(snapshot->bindings, snapshot->fn_layer_key);
+        mouse_router_.set_bindings(snapshot->mouse_bindings, snapshot->fn_layer_key);
+    }
 
     scheduler_.configure(snapshot->auto_click_tasks, now_ms());
     if (!auto_click_initialized_) {
@@ -458,7 +512,9 @@ void Engine::apply_pending_config() {
         scheduler_.enabled() ? scheduler_.next_due_ms() : -1,
         std::memory_order_relaxed);
 
-    release_all();
+    if (bindings_changed) {
+        release_all();
+    }
 }
 
 void Engine::handle_action(Action action, bool active, BindMode mode) {
@@ -558,10 +614,10 @@ void Engine::apply_click(MouseButton button, bool active, BindMode mode) {
     const uint32_t bit = 1u << static_cast<unsigned>(button);
 
     if (mode == BindMode::Tap) {
-        // Tap reports `active == false` on press: a complete click. It does not
-        // touch the held-button bits, which belong to Hold and Toggle bindings;
-        // a config change that changes the mode releases everything anyway.
-        if (!active) {
+        // A complete click. If the button is already down for another reason
+        // (a DragLock, or a Hold binding on the same button), a tap would
+        // release it under the user: skip it and leave the held state alone.
+        if (!active && (buttons_down_.load(std::memory_order_relaxed) & bit) == 0) {
             backend_.button(button, true);
             backend_.button(button, false);
             bump(counters_.injected_buttons);
@@ -574,26 +630,41 @@ void Engine::apply_click(MouseButton button, bool active, BindMode mode) {
     // engine is disabled or the session is lost, so the desktop is never left
     // in a drag.
     if (active) {
-        const uint32_t was = held_buttons_.fetch_or(bit, std::memory_order_relaxed);
-        if ((was & bit) == 0) {
-            backend_.button(button, true);
-            bump(counters_.injected_buttons);
-        }
+        held_buttons_.fetch_or(bit, std::memory_order_relaxed);
     } else {
-        const uint32_t was = held_buttons_.fetch_and(~bit, std::memory_order_relaxed);
-        if ((was & bit) != 0) {
-            backend_.button(button, false);
-            bump(counters_.injected_buttons);
-        }
+        held_buttons_.fetch_and(~bit, std::memory_order_relaxed);
     }
+    // The physical state is derived, not set: on the left button a DragLock
+    // also wants it down, and the two features must not fight over it.
+    update_button(button);
+}
+
+// Brings one physical mouse button in line with every reason it should be
+// down: a Hold/Toggle click binding, or the drag lock for the left button.
+void Engine::update_button(MouseButton button) {
+    const uint32_t bit = 1u << static_cast<unsigned>(button);
+    const bool held = (held_buttons_.load(std::memory_order_relaxed) & bit) != 0;
+    const bool drag = button == MouseButton::Left &&
+                      drag_lock_.load(std::memory_order_relaxed);
+    const bool want = held || drag;
+    const bool was = (buttons_down_.load(std::memory_order_relaxed) & bit) != 0;
+    if (want == was) {
+        return;
+    }
+    if (want) {
+        buttons_down_.fetch_or(bit, std::memory_order_relaxed);
+    } else {
+        buttons_down_.fetch_and(~bit, std::memory_order_relaxed);
+    }
+    backend_.button(button, want);
+    bump(counters_.injected_buttons);
 }
 
 void Engine::apply_drag_lock(bool engaged) {
     if (drag_lock_.exchange(engaged) == engaged) {
         return;
     }
-    backend_.button(MouseButton::Left, engaged);
-    bump(counters_.injected_buttons);
+    update_button(MouseButton::Left);
 }
 
 void Engine::refresh_active_mask() {
@@ -614,7 +685,7 @@ void Engine::refresh_active_mask() {
     set(Action::Precision, precision_.load(std::memory_order_relaxed));
     set(Action::Turbo, turbo_.load(std::memory_order_relaxed));
     set(Action::DragLock, drag_lock_.load(std::memory_order_relaxed));
-    const uint32_t buttons = held_buttons_.load(std::memory_order_relaxed);
+    const uint32_t buttons = buttons_down_.load(std::memory_order_relaxed);
     set(Action::ClickLeft, (buttons & (1u << static_cast<unsigned>(MouseButton::Left))) != 0);
     set(Action::ClickRight, (buttons & (1u << static_cast<unsigned>(MouseButton::Right))) != 0);
     set(Action::ClickMiddle, (buttons & (1u << static_cast<unsigned>(MouseButton::Middle))) != 0);
@@ -750,11 +821,12 @@ void Engine::release_all() {
     mouse_router_.release_all();
     // A halted player must never leave a button or key held down.
     player_.stop();
-    // Unconditionally drop a drag lock if one is engaged. The helper is a
-    // no-op when the lock is already off.
-    apply_drag_lock(false);
-    // Same for buttons pressed by a Hold or Toggle click binding.
-    const uint32_t buttons = held_buttons_.exchange(0, std::memory_order_relaxed);
+    // Drop the drag lock and every held click binding, then let the derived
+    // button state release whatever was physically down. One release per
+    // button, even when both reasons applied.
+    drag_lock_.store(false, std::memory_order_relaxed);
+    held_buttons_.store(0, std::memory_order_relaxed);
+    const uint32_t buttons = buttons_down_.exchange(0, std::memory_order_relaxed);
     for (unsigned i = 0; i < 5; ++i) {
         if ((buttons & (1u << i)) != 0) {
             backend_.button(static_cast<MouseButton>(i), false);
@@ -935,6 +1007,13 @@ void Engine::apply_macro_requests(int64_t now_us) {
         }
     }
 
+    if (record_cancel_requested_.exchange(false, std::memory_order_relaxed)) {
+        // Discard the fragment: the recording was aborted by the panic key or a
+        // session change, not finished by the user.
+        recorder_.stop();
+        recording_active_.store(false, std::memory_order_relaxed);
+    }
+
     if (record_stop_requested_.exchange(false, std::memory_order_relaxed)) {
         if (recorder_.active()) {
             Macro macro = recorder_.finish({}, {});
@@ -955,6 +1034,10 @@ void Engine::apply_macro_requests(int64_t now_us) {
     }
     if (player_resume_requested_.exchange(false, std::memory_order_relaxed)) {
         player_.resume(now_us);
+        // The physical mouse is likely resting where the user clicked Resume,
+        // which may be far from wherever the player is working; take a fresh
+        // reference point so that first comparison is not a false move.
+        have_playback_point_ = false;
     }
 
     if (playback_pending_.exchange(false, std::memory_order_acquire)) {
@@ -967,6 +1050,8 @@ void Engine::apply_macro_requests(int64_t now_us) {
         }
         if (macro) {
             player_.start(macro, options, now_us);
+            // Start each playback with a fresh movement reference point.
+            have_playback_point_ = false;
         }
     }
 }
@@ -978,16 +1063,53 @@ void Engine::drain_macro_events(int64_t now_us) {
     while (macro_mouse_ring_.pop(event)) {
         if (recording) {
             recorder_.add(event);
-        } else if (!event.injected &&
-                   player_.state() == MacroPlayerState::Playing) {
+            continue;
+        }
+
+        const bool playing = player_.state() == MacroPlayerState::Playing;
+
+        if (event.type == MacroInputEvent::Type::MouseMove) {
+            // Every move updates the reference point, injected ones included:
+            // they tell us where the cursor is right now, which is what a
+            // physical jitter has to be compared against.
+            bool have_reference = false;
+            int32_t ref_x = 0;
+            int32_t ref_y = 0;
+            if (have_playback_point_) {
+                have_reference = true;
+                ref_x = playback_x_;
+                ref_y = playback_y_;
+            }
+            have_playback_point_ = true;
+            playback_x_ = event.x;
+            playback_y_ = event.y;
+
+            if (!playing || event.injected || !have_reference) {
+                continue;
+            }
             // Physical mouse activity always wins over a playing macro. The
             // player's own events carry the KeyMouse tag, so this only fires on
-            // the real mouse. A button release is not activity: the release of
-            // the very click that pressed Play lands after playback has started,
-            // and pausing on it would stop every mouse-started macro instantly.
-            if (event.type != MacroInputEvent::Type::ButtonUp) {
+            // the real mouse. Movement needs a threshold: a click on Play or
+            // Resume often nudges the sensor by a pixel, and pausing on that
+            // would make the macro look like it stopped by itself. Anything at
+            // or beyond the configured movement filter counts as a real move.
+            const double dx = static_cast<double>(event.x - ref_x);
+            const double dy = static_cast<double>(event.y - ref_y);
+            const double tolerance =
+                macro_tolerance_px_.load(std::memory_order_relaxed);
+            if (dx * dx + dy * dy >= tolerance * tolerance) {
                 player_.pause(now_us);
+                have_playback_point_ = false;
             }
+            continue;
+        }
+
+        if (playing && !event.injected &&
+            event.type != MacroInputEvent::Type::ButtonUp) {
+            // A button release is not activity: the release of the very click
+            // that pressed Play lands after playback has started, and pausing
+            // on it would stop every mouse-started macro instantly.
+            player_.pause(now_us);
         }
     }
     while (macro_key_ring_.pop(event)) {

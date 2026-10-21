@@ -73,11 +73,9 @@ void draw_mouse_mode_tab(DashboardContext& context) {
         mouse.toggle_key = toggle.chord;
         changed = true;
     }
-    if (mouse.toggle_key == config.panic_key ||
-        mouse.toggle_key == config.auto_click.toggle_key ||
-        mouse.toggle_key == config.macros.record_key ||
-        mouse.toggle_key == config.macros.play_key ||
-        mouse.toggle_key == config.macros.stop_key) {
+    if (config.chord_is_reserved_except(mouse.toggle_key,
+                                        AppConfig::ControlKey::MouseToggle) ||
+        config.chord_in_use(mouse.toggle_key)) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("mouse.reserved").data());

@@ -371,7 +371,11 @@ const Profile& AppConfig::active() const {
     return profiles[index];
 }
 
-bool AppConfig::chord_in_use(const Chord& chord, const std::string& ignore_profile) const {
+bool AppConfig::chord_in_use(const Chord& chord, const std::string& ignore_profile,
+                             const std::string& ignore_macro_id) const {
+    if (!chord.valid()) {
+        return false;
+    }
     for (const auto& profile : profiles) {
         if (!ignore_profile.empty() && profile.name == ignore_profile) {
             continue;
@@ -387,23 +391,55 @@ bool AppConfig::chord_in_use(const Chord& chord, const std::string& ignore_profi
             return true;
         }
     }
+    // A macro hotkey is just as reserved as a binding: the hook thread checks
+    // the hotkey table before the binding table, so a chord used by both can
+    // never reach the binding.
+    for (const auto& entry : macros.entries) {
+        if (!ignore_macro_id.empty() && entry.id == ignore_macro_id) {
+            continue;
+        }
+        if (entry.hotkey.valid() && entry.hotkey == chord) {
+            return true;
+        }
+    }
     return false;
 }
 
 bool AppConfig::chord_is_reserved(const Chord& chord) const {
+    if (!chord.valid()) {
+        return false;
+    }
     return chord == panic_key || chord == mouse_mode.toggle_key ||
            chord == auto_click.toggle_key || chord == macros.record_key ||
            chord == macros.play_key || chord == macros.stop_key;
 }
 
-bool AppConfig::chord_is_reserved_except(const Chord& chord,
-                                         const Chord& ignore) const {
-    const auto collides = [&chord, &ignore](const Chord& other) {
-        return other != ignore && chord == other;
-    };
-    return collides(panic_key) || collides(mouse_mode.toggle_key) ||
-           collides(auto_click.toggle_key) || collides(macros.record_key) ||
-           collides(macros.play_key) || collides(macros.stop_key);
+bool AppConfig::chord_is_reserved_except(const Chord& chord, ControlKey own) const {
+    if (!chord.valid()) {
+        return false;
+    }
+    // Each control key slot is compared explicitly so `own` can skip exactly
+    // one of them; an index-based loop over an array of pointers would obscure
+    // which slot is being skipped.
+    if (own != ControlKey::Panic && chord == panic_key) {
+        return true;
+    }
+    if (own != ControlKey::MouseToggle && chord == mouse_mode.toggle_key) {
+        return true;
+    }
+    if (own != ControlKey::AutoClickToggle && chord == auto_click.toggle_key) {
+        return true;
+    }
+    if (own != ControlKey::MacroRecord && chord == macros.record_key) {
+        return true;
+    }
+    if (own != ControlKey::MacroPlay && chord == macros.play_key) {
+        return true;
+    }
+    if (own != ControlKey::MacroStop && chord == macros.stop_key) {
+        return true;
+    }
+    return false;
 }
 
 std::vector<Binding> make_mouse_mode_bindings() {
@@ -950,7 +986,9 @@ std::vector<std::string> validate(const AppConfig& config) {
         if (config.chord_is_reserved(entry.hotkey)) {
             problems.push_back("Macro '" + entry.name + "' uses the reserved key " +
                 format_chord(entry.hotkey));
-        } else if (config.chord_in_use(entry.hotkey)) {
+        } else if (config.chord_in_use(entry.hotkey, {}, entry.id)) {
+            // The hotkey itself is skipped by id; any other binding or macro
+            // hotkey on the same chord is a genuine conflict.
             problems.push_back("Macro '" + entry.name + "' hotkey " +
                 format_chord(entry.hotkey) + " is already bound");
         }

@@ -159,11 +159,9 @@ void draw_auto_click_tab(DashboardContext& context) {
         auto_click.toggle_key = toggle.chord;
         changed = true;
     }
-    if (auto_click.toggle_key == config.panic_key ||
-        auto_click.toggle_key == config.mouse_mode.toggle_key ||
-        auto_click.toggle_key == config.macros.record_key ||
-        auto_click.toggle_key == config.macros.play_key ||
-        auto_click.toggle_key == config.macros.stop_key) {
+    if (config.chord_is_reserved_except(auto_click.toggle_key,
+                                        AppConfig::ControlKey::AutoClickToggle) ||
+        config.chord_in_use(auto_click.toggle_key)) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("mouse.reserved").data());

@@ -68,10 +68,16 @@ RouteResult Router::on_key_down(KeyId key, ModMask mods) {
             break;
 
         case BindMode::Toggle: {
+            // A toggle and a hold can share an action. Turning the toggle off
+            // must not stop the action while another key still holds it, so
+            // the result reports the state after the flip rather than the
+            // toggle's own value.
+            const bool was_active = is_action_active(entry.action);
             bool& state = toggled_[static_cast<uint16_t>(entry.action)];
             state = !state;
-            result.active = state;
-            result.changed = true;
+            const bool now_active = is_action_active(entry.action);
+            result.active = now_active;
+            result.changed = now_active != was_active;
             break;
         }
     }
@@ -127,13 +133,20 @@ std::vector<Action> Router::release_all() {
     released.erase(std::unique(released.begin(), released.end()), released.end());
 
     active_.clear();
-    held_keys_.clear();
     toggled_.clear();
+    // held_keys_ is deliberately kept. It records which physical keys are down,
+    // not which actions are running: dropping it would make the next OS
+    // auto-repeat of a still-held Tap or Toggle key look like a fresh press and
+    // re-fire the action. The key's own on_key_up() removes it, and reset()
+    // clears it on a session change.
     return released;
 }
 
-bool Router::any_active() const {
-    if (!active_.empty()) {
+void Router::forget_held_keys() {
+    held_keys_.clear();
+}
+
+bool Router::any_active() const {    if (!active_.empty()) {
         return true;
     }
     for (const auto& [action_value, state] : toggled_) {

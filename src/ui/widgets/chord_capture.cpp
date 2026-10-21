@@ -129,6 +129,27 @@ bool fn_layer_down(KeyId fn_layer_key) {
     return false;
 }
 
+// The chord recorder can only see keys that exist in kMappings. The Fn layer
+// picker must offer the same set, or the user can choose a key the recorder
+// will never recognize and Fn chords become impossible to record.
+// Defined outside the anonymous namespace so the General tab can filter its
+// picker with the exact same rule.
+}  // namespace
+
+bool is_capturable_fn_key(KeyId key) {
+    if (key == key::Invalid || key == key::Escape || key_is_modifier(key)) {
+        return false;
+    }
+    for (const auto& mapping : kMappings) {
+        if (mapping.key == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace {
+
 // Storage keys for the recorder state, resolved against the widget's ID so
 // every recorder on screen has its own.
 struct CaptureState {
@@ -199,13 +220,25 @@ ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18
             ImGui::Separator();
             ImGui::Spacing();
 
+            // Compute the live modifier state every frame rather than only when
+            // a mapped key is pressed: pressing or releasing Ctrl must update
+            // the preview immediately, including when the user backs out of a
+            // modifier without ever pressing a base key.
+            ModMask live_mods = mods_from_io(ImGui::GetIO());
+            if (fn_layer_down(fn_layer_key)) {
+                live_mods |= ModFn;
+            }
+            if (*state.key == key::Invalid) {
+                *state.mods = live_mods;
+            }
+
             const Chord pending{static_cast<ModMask>(*state.mods),
                                 static_cast<KeyId>(*state.key)};
             std::string preview = format_chord(pending);
             if (preview.empty()) {
                 // Only modifiers so far: show them, so the user can see the
                 // recorder is picking them up.
-                preview = format_modifiers(static_cast<ModMask>(*state.mods));
+                preview = format_modifiers(live_mods);
             }
             if (preview.empty()) {
                 preview = tr.tr("capture.waiting");
@@ -226,12 +259,7 @@ ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18
                     continue;
                 }
 
-                ModMask mods = mods_from_io(ImGui::GetIO());
-                if (fn_layer_down(fn_layer_key)) {
-                    // The user is holding the configured Fn layer key, which is
-                    // an ordinary key as far as ImGui is concerned.
-                    mods |= ModFn;
-                }
+                const ModMask mods = live_mods;
 
                 if (mapping.imgui == ImGuiKey_Escape) {
                     *state.open = 0;

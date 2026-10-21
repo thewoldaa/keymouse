@@ -25,7 +25,10 @@ bool draw_fn_layer_picker(AppConfig& config, I18n& tr) {
 
     if (ImGui::BeginCombo("##fnkey", key_name(config.fn_layer_key).data())) {
         for (const auto& info : all_keys()) {
-            if (info.id == key::Invalid || info.is_modifier) {
+            // Only keys the chord recorder can see are offered. A media or CJK
+            // key here would look configured while Fn + X could never be
+            // recorded, because the recorder's ImGui mapping has no entry.
+            if (!is_capturable_fn_key(info.id)) {
                 continue;
             }
             if (ImGui::Selectable(info.name.data(), info.id == config.fn_layer_key)) {
@@ -96,18 +99,29 @@ void draw_general_tab(DashboardContext& context) {
 
     ImGui::TextUnformatted(tr.tr("general.panic_key").data());
     ImGui::SameLine(200.0f);
-    const ChordCaptureResult result = chord_capture("panic", config.panic_key, tr);
+    const ChordCaptureResult result =
+        chord_capture("panic", config.panic_key, tr, config.fn_layer_key);
     capture_active |= result.state == ChordCaptureResult::State::Capturing;
+    // The conflict message has to survive across frames: the accepted chord is
+    // reported exactly once, so a one-frame message would flash and vanish
+    // before the user could read it.
+    static bool panic_conflict = false;
     if (result.state == ChordCaptureResult::State::Accepted) {
-        if (config.chord_in_use(result.chord)) {
+        if (config.chord_in_use(result.chord) ||
+            config.chord_is_reserved_except(result.chord, AppConfig::ControlKey::Panic)) {
             // A panic key that also performs an action is worse than no panic
             // key, so a conflicting chord is refused rather than accepted.
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
-                               "%s", tr.tr("bindings.conflict").data());
+            panic_conflict = true;
         } else {
             config.panic_key = result.chord;
+            panic_conflict = false;
             changed = true;
         }
+    }
+    if (panic_conflict) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
+                           "%s", tr.tr("bindings.conflict").data());
     }
     ImGui::TextDisabled("%s", tr.tr("general.panic_hint").data());
 

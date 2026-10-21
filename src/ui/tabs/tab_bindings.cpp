@@ -26,6 +26,14 @@ bool has_conflict(const Profile& profile, const Chord& chord, size_t ignore_inde
     return false;
 }
 
+// A chord is unusable for a binding when another control key or a macro hotkey
+// already owns it. The binding being edited is in `profile`, so the profile
+// itself is skipped; its parallels are covered by has_conflict() above.
+bool reserved_elsewhere(const AppConfig& config, const Chord& chord) {
+    return config.chord_is_reserved(chord) ||
+           config.chord_in_use(chord, config.active().name);
+}
+
 }  // namespace
 
 void draw_bindings_tab(DashboardContext& context) {
@@ -75,7 +83,7 @@ void draw_bindings_tab(DashboardContext& context) {
             }
 
             if (has_conflict(profile, binding.chord, i) ||
-                config.chord_is_reserved(binding.chord)) {
+                reserved_elsewhere(config, binding.chord)) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning), "!");
                 if (ImGui::IsItemHovered()) {
@@ -155,7 +163,7 @@ void draw_bindings_tab(DashboardContext& context) {
     ImGui::SameLine();
     const bool can_add = new_chord.valid() &&
                          !has_conflict(profile, new_chord, profile.bindings.size()) &&
-                         !config.chord_is_reserved(new_chord);
+                         !reserved_elsewhere(config, new_chord);
     ImGui::BeginDisabled(!can_add);
     if (ImGui::Button(tr.tr("bindings.add").data())) {
         Binding binding;
@@ -170,7 +178,7 @@ void draw_bindings_tab(DashboardContext& context) {
 
     if (new_chord.valid() &&
         (has_conflict(profile, new_chord, profile.bindings.size()) ||
-         config.chord_is_reserved(new_chord))) {
+         reserved_elsewhere(config, new_chord))) {
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                            "%s", tr.tr("bindings.conflict").data());
     }

@@ -182,6 +182,40 @@ TEST_CASE("chord_in_use finds bindings across profiles") {
     CHECK_FALSE(config.chord_in_use(Chord{ModNone, key::F24}));
 }
 
+TEST_CASE("reserved-except skips only the picker's own control key") {
+    AppConfig config = make_default_config();
+    // Each control key compared against the other five is not a collision.
+    CHECK_FALSE(config.chord_is_reserved_except(
+        config.macros.record_key, AppConfig::ControlKey::MacroRecord));
+    CHECK_FALSE(config.chord_is_reserved_except(
+        config.macros.play_key, AppConfig::ControlKey::MacroPlay));
+    CHECK_FALSE(config.chord_is_reserved_except(
+        config.panic_key, AppConfig::ControlKey::Panic));
+
+    // A real collision with another control key is still reported.
+    config.macros.record_key = config.panic_key;
+    CHECK(config.chord_is_reserved_except(config.macros.record_key,
+                                          AppConfig::ControlKey::MacroRecord));
+    // ...and each of the two slots skips only itself, so both see the other.
+    CHECK(config.chord_is_reserved_except(config.macros.record_key,
+                                          AppConfig::ControlKey::Panic));
+    CHECK(config.chord_is_reserved(config.macros.record_key));
+
+    // An invalid chord is never "reserved".
+    CHECK_FALSE(config.chord_is_reserved_except(Chord{}, AppConfig::ControlKey::Panic));
+}
+
+TEST_CASE("chord_in_use counts macro hotkeys and can skip one macro") {
+    AppConfig config = make_default_config();
+    const Chord hotkey{ModAlt, key::KeyF};
+    config.macros.entries = {MacroEntry{"farm", "Farm", hotkey}};
+
+    CHECK(config.chord_in_use(hotkey));
+    // The macro's own hotkey is not a conflict with itself.
+    CHECK_FALSE(config.chord_in_use(hotkey, {}, "farm"));
+    CHECK_FALSE(config.chord_in_use(Chord{}, {}));
+}
+
 TEST_CASE("mouse mode and auto-click survive a json roundtrip") {
     AppConfig original = make_default_config();
     original.mouse_mode.start_enabled = true;

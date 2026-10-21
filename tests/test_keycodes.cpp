@@ -139,6 +139,28 @@ TEST_CASE("media keys have a virtual-key injection fallback") {
     CHECK(win32::from_virtual_key(*vk) == key::MediaPlayPause);
 }
 
+TEST_CASE("media and CJK keys have no scan code, so the fallback is reachable") {
+    // 0xE0 0x5E..0x6A are the ACPI power/sleep/wake keys, not media keys. A
+    // bogus mapping here would make the backend's virtual-key fallback dead
+    // code and send the wrong key.
+    for (KeyId id : {key::VolumeMute, key::VolumeDown, key::VolumeUp,
+                     key::MediaStop, key::MediaPlayPause, key::MediaTrackPrev,
+                     key::MediaTrackNext, key::Lang2}) {
+        CHECK_MESSAGE(win32::to_scan_code(id).key == key::Invalid,
+                      "unexpected scan code for ", key_name(id));
+        CHECK_MESSAGE(win32::to_virtual_key(id).has_value(),
+                      "no virtual key for ", key_name(id));
+    }
+    // key::Lang1 has no virtual key of its own: VK_HANGUL and VK_KANA are the
+    // same value, so the Korean key arrives as KanaMode and is sent back that
+    // way. It is deliberately absent from the table above.
+
+    // Pause is injected as VK_PAUSE: 0xE0 0x46 is Ctrl+Break, a different key.
+    CHECK(win32::to_scan_code(key::Pause).key == key::Invalid);
+    REQUIRE(win32::to_virtual_key(key::Pause).has_value());
+    CHECK(*win32::to_virtual_key(key::Pause) == 0x13u);  // VK_PAUSE
+}
+
 TEST_CASE("virtual-key fallback covers every letter and digit") {
     for (KeyId id = key::KeyA; id <= key::KeyZ; ++id) {
         const auto vk = win32::to_virtual_key(id);

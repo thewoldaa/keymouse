@@ -128,7 +128,6 @@ constexpr ScanMapping kScanMappings[] = {
     {0x6D, false, key::F13 + 9},
     {0x6E, false, key::F13 + 10},
     {0x76, false, key::F24},
-    {0x70, false, key::KanaMode},
     {0x73, false, key::IntlBackslash},  // Brazilian ABNT2
 
     // Extended keys
@@ -136,8 +135,7 @@ constexpr ScanMapping kScanMappings[] = {
     {0x1D, true, key::ControlRight},
     {0x35, true, key::NumpadDivide},
     {0x38, true, key::AltRight},
-    {0x46, true, key::Pause},     // Ctrl+Break; Pause itself is E1-prefixed
-    {0x47, true, key::Home},
+    {0x46, true, key::Pause},     // Ctrl+Break; Pause itself is E1-prefixed    {0x47, true, key::Home},
     {0x48, true, key::ArrowUp},
     {0x49, true, key::PageUp},
     {0x4B, true, key::ArrowLeft},
@@ -150,19 +148,14 @@ constexpr ScanMapping kScanMappings[] = {
     {0x5B, true, key::MetaLeft},
     {0x5C, true, key::MetaRight},
     {0x5D, true, key::Menu},
-    {0x5E, true, key::VolumeMute},
-    {0x5F, true, key::VolumeDown},
-    {0x60, true, key::VolumeUp},
-    {0x61, true, key::MediaStop},
-    {0x62, true, key::MediaPlayPause},
-    {0x63, true, key::MediaTrackPrev},
-    {0x64, true, key::MediaTrackNext},
-    {0x65, true, key::Lang1},
-    {0x66, true, key::Lang2},
-    {0x67, true, key::Convert},
-    {0x68, true, key::NonConvert},
-    {0x69, true, key::IntlRo},
-    {0x6A, true, key::IntlYen},
+    // Media keys and the CJK conversion keys are deliberately absent: scan
+    // 0xE0 0x5E..0x6A are the ACPI power/sleep/wake keys, not media keys. They
+    // are received through from_vk_switch() and injected through
+    // to_virtual_key(), which is exactly what the backend's fallback is for.
+    {0x70, false, key::KanaMode},
+    {0x79, false, key::Convert},
+    {0x7B, false, key::NonConvert},
+    {0x7D, false, key::IntlYen},
 };
 // clang-format on
 
@@ -250,6 +243,9 @@ KeyId from_vk_switch(uint32_t vk) {
         case VK_MEDIA_STOP: return key::MediaStop;
         case VK_MEDIA_PLAY_PAUSE: return key::MediaPlayPause;
         case VK_KANA: return key::KanaMode;
+        // VK_HANGUL is the same value as VK_KANA (0x15), so the Korean input
+        // key arrives as KanaMode; there is no separate VK to tell them apart.
+        case VK_HANJA: return key::Lang2;
         case VK_CONVERT: return key::Convert;
         case VK_NONCONVERT: return key::NonConvert;
         default: return key::Invalid;
@@ -286,6 +282,12 @@ KeyId from_virtual_key(uint32_t vk) {
 }
 
 KeyTranslation to_scan_code(KeyId target) {
+    // Pause is sent as a virtual key. Its own scan code (E1 1D 45) is not a
+    // plain set-1 sequence, and 0xE0 0x46 is Ctrl+Break, a different key. The
+    // injection fallback in the backend turns key::Pause into VK_PAUSE.
+    if (target == key::Pause) {
+        return {};
+    }
     for (const auto& mapping : kScanMappings) {
         if (mapping.key == target) {
             return {mapping.key, mapping.extended, mapping.scan};
@@ -375,6 +377,7 @@ std::optional<uint32_t> to_virtual_key(KeyId target) {
         case key::MediaStop: return VK_MEDIA_STOP;
         case key::MediaPlayPause: return VK_MEDIA_PLAY_PAUSE;
         case key::KanaMode: return VK_KANA;
+        case key::Lang2: return VK_HANJA;
         case key::Convert: return VK_CONVERT;
         case key::NonConvert: return VK_NONCONVERT;
         default: return std::nullopt;

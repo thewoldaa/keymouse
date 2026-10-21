@@ -906,6 +906,9 @@ TEST_CASE("the panic key stops a running macro recording and playback") {
     CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Pause)));
     engine.pump();
     CHECK_FALSE(engine.macro_recording());
+    // The fragment is cancelled, not handed to the application as a macro.
+    Macro discarded;
+    CHECK_FALSE(engine.consume_recorded_macro(discarded));
     CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
 
     auto macro = std::make_shared<Macro>();
@@ -921,4 +924,210 @@ TEST_CASE("the panic key stops a running macro recording and playback") {
     engine.pump();
     CHECK(engine.macro_player_state() == MacroPlayerState::Idle);
     CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Pause)));
+}
+
+TEST_CASE("a chorded control key keeps swallowing its auto-repeat after modifiers go") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.mouse_mode.beep = false;
+    config.mouse_mode.toggle_key = Chord{ModCtrl | ModAlt, key::KeyM};
+    engine.apply_config(config);
+    engine.pump();
+
+    // Consume the chord, then let go of the modifiers while M is still held.
+    CHECK(engine.on_input_event(
+        event(InputEvent::Type::KeyDown, key::KeyM, ModCtrl | ModAlt)));
+    CHECK(engine.mouse_mode());
+
+    // OS auto-repeat now arrives with no modifiers. It must still be swallowed:
+    // otherwise the application sees a key-down whose matching key-up is
+    // swallowed, leaving M stuck.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyM)));
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyM)));
+    CHECK(engine.mouse_mode());
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyM)));
+    // After the real release the plain key is free again.
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyM)));
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyM)));
+}
+
+TEST_CASE("a chorded macro hotkey keeps swallowing its auto-repeat") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.macros.entries = {MacroEntry{"farm", "Farm", Chord{ModAlt, key::KeyF}}};
+    engine.apply_config(config);
+    engine.pump();
+
+    std::string id;
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF, ModAlt)));
+    REQUIRE(engine.consume_macro_hotkey(id));
+
+    // Alt released while F is still held.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF)));
+    CHECK_FALSE(engine.consume_macro_hotkey(id));
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyF)));
+
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyF)));
+    CHECK_FALSE(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyF)));
+}
+
+TEST_CASE("a motion-only config change does not release a held movement key") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.motion.method = MotionMethod::Relative;
+    config.active().bindings = {plain(Action::MoveRight, key::KeyL)};
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyL)));
+    engine.pump();
+    CHECK(active(engine, Action::MoveRight));
+
+    // Dragging the speed slider or pressing SpeedUp republishes the config
+    // without changing any binding.
+    config.motion.speed_px_s *= 1.25;
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(active(engine, Action::MoveRight));
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyL)));
+    engine.pump();
+    CHECK_FALSE(active(engine, Action::MoveRight));
+}
+
+TEST_CASE("a binding change still releases held actions") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.motion.method = MotionMethod::Relative;
+    config.active().bindings = {plain(Action::MoveRight, key::KeyL)};
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyL)));
+    engine.pump();
+    CHECK(active(engine, Action::MoveRight));
+
+    config.active().bindings = {plain(Action::MoveLeft, key::KeyH)};
+    engine.apply_config(config);
+    engine.pump();
+    CHECK_FALSE(active(engine, Action::MoveRight));
+}
+
+TEST_CASE("the drag lock and a left-click binding share one button state") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::DragLock, ModNone, key::Space, BindMode::Toggle),
+        with_mods(Action::ClickLeft, ModNone, key::KeyU, BindMode::Toggle),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    // Lock the drag, then toggle a left-click hold on: the button is already
+    // down, so no second press is injected.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Space)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Space)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 1);
+    CHECK(backend.buttons[0].second);
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyU)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyU)));
+    engine.pump();
+    CHECK(backend.buttons.size() == 1);
+
+    // Turning the click binding off must not release the drag lock's button.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyU)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::KeyU)));
+    engine.pump();
+    CHECK(backend.buttons.size() == 1);
+
+    // Unlocking the drag ends with exactly one release.
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Space)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Space)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+}
+
+TEST_CASE("release_all emits one release even with a drag lock and a held click") {
+    FakeBackend backend;
+    Engine engine(backend);
+
+    AppConfig config = make_default_config();
+    config.active().bindings = {
+        with_mods(Action::DragLock, ModNone, key::Space, BindMode::Toggle),
+        with_mods(Action::ClickLeft, ModNone, key::KeyU, BindMode::Hold),
+    };
+    engine.apply_config(config);
+    engine.pump();
+
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::Space)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyUp, key::Space)));
+    engine.pump();
+    CHECK(engine.on_input_event(event(InputEvent::Type::KeyDown, key::KeyU)));
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 1);
+
+    engine.set_enabled(false);
+    engine.pump();
+    REQUIRE(backend.buttons.size() == 2);
+    CHECK_FALSE(backend.buttons[1].second);
+    CHECK_FALSE(active(engine, Action::ClickLeft));
+    CHECK_FALSE(engine.drag_lock());
+}
+
+TEST_CASE("micro-jitter does not pause playback but a real move does") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+
+    AppConfig config = make_default_config();
+    config.macros.move_tolerance_px = 3.0;
+    engine.apply_config(config);
+    engine.pump();
+
+    auto macro = std::make_shared<Macro>();
+    macro->steps = {macro_step(MacroStepType::Wait, 60000)};
+    engine.play_macro(macro, MacroPlaybackOptions{});
+    engine.pump();
+    REQUIRE(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    // One pixel of sensor noise, as when the user clicks Play.
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 1000, 100, 100));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 2000, 101, 100));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+
+    // A real move does pause it.
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 3000, 400, 300));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Paused);
+
+    // Resume takes a fresh reference point relative to the real cursor, so a
+    // jitter right after resuming does not pause it again.
+    engine.request_macro_resume();
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
+    engine.on_mouse_event(mouse_event(MacroInputEvent::Type::MouseMove, 4000, 401, 300));
+    engine.pump();
+    CHECK(engine.macro_player_state() == MacroPlayerState::Playing);
 }

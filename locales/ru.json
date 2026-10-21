@@ -263,6 +263,7 @@
   "macro.exported": "Макрос экспортирован.",
   "macro.export_failed": "Не удалось записать файл макроса.",
   "macro.load_failed": "Не удалось прочитать файл макроса.",
+  "macro.empty_recording": "Запись была остановлена, ничего не успев захватить.",
 
   "time.seconds": "сек",
   "time.minutes": "мин",

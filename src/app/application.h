@@ -72,6 +72,9 @@ private:
 
     void on_command(const std::string& command);
     void poll_foreground();
+    // Publishes the engine configuration for the runtime profile instead of the
+    // one selected in the Profiles tab.
+    void apply_runtime_profile();
     void update_tray_status();
 
     // ---- Macros ----------------------------------------------------------
@@ -149,6 +152,18 @@ private:
 
     std::string foreground_exe_;
     std::chrono::steady_clock::time_point last_foreground_poll_{};
+    // Profile the engine is actually running. Kept apart from
+    // config_.active_profile, which is what the Profiles tab selects for
+    // editing: an automatic switch must not move the user's selection, and must
+    // not be written to config.json when some unrelated setting is saved.
+    size_t runtime_profile_ = 0;
+    // The last selection seen in config_, so a change made in the Profiles tab
+    // can be told apart from the application's own switching.
+    size_t last_seen_active_profile_ = 0;
+    // The foreground executable the last automatic profile switch was
+    // evaluated for. Cleared when the user changes the selection so the rules
+    // are re-evaluated against the new one.
+    std::string last_profile_exe_;
 };
 
 }  // namespace km

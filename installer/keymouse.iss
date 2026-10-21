@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: GPL-3.0-or-later
+﻿; SPDX-License-Identifier: GPL-3.0-or-later
 ;
 ; Inno Setup script for KeyMouse.
 ;
@@ -13,7 +13,7 @@
 ; only this line and CHANGELOG.md are manual.
 
 #define AppName "KeyMouse"
-#define AppVersion "0.3.1"
+#define AppVersion "0.3.2"
 #define AppId "{{7A2E4C1B-5D3F-4E8A-9C6B-2F1D0A7E5C93}"
 #define AppUrl "https://github.com/thewoldaa/keymouse"
 #define AppSource "..\build\Release"
@@ -70,8 +70,8 @@ Name: "indonesian"; MessagesFile: "languages\Indonesian.isl"
 
 [CustomMessages]
 english.DeleteSettings=Also delete your settings and profiles?
-russian.DeleteSettings=Также удалить настройки и профили?
-japanese.DeleteSettings=設定とプロファイルも削除しますか？
+russian.DeleteSettings=Ð¢Ð°ÐºÐ¶Ðµ ÑƒÐ´Ð°Ð»Ð¸Ñ‚ÑŒ Ð½Ð°ÑÑ‚Ñ€Ð¾Ð¹ÐºÐ¸ Ð¸ Ð¿Ñ€Ð¾Ñ„Ð¸Ð»Ð¸?
+japanese.DeleteSettings=è¨­å®šã¨ãƒ—ãƒ­ãƒ•ã‚¡ã‚¤ãƒ«ã‚‚å‰Šé™¤ã—ã¾ã™ã‹ï¼Ÿ
 indonesian.DeleteSettings=Hapus juga pengaturan dan profil Anda?
 
 [Tasks]

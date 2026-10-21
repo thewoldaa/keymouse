@@ -263,6 +263,7 @@
   "macro.exported": "Makro diekspor.",
   "macro.export_failed": "Gagal menulis file makro.",
   "macro.load_failed": "Gagal membaca file makro.",
+  "macro.empty_recording": "Perekaman dihentikan sebelum sempat menangkap apa pun.",
 
   "time.seconds": "detik",
   "time.minutes": "menit",

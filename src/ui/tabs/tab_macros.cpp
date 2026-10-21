@@ -285,6 +285,18 @@ void draw_macros_tab(DashboardContext& context) {
             context.macro_set_hotkey) {
             context.macro_set_hotkey(entry.id, captured.chord);
         }
+        // A hotkey that is also a control key or a binding never fires: the
+        // hook thread resolves control keys and bindings first. Warn while the
+        // user is picking one instead of leaving a silently dead hotkey.
+        if (entry.hotkey.valid() &&
+            (config.chord_is_reserved(entry.hotkey) ||
+             config.chord_in_use(entry.hotkey, {}, entry.id))) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning), "!");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tr.tr("bindings.conflict").data());
+            }
+        }
         // A hotkey is optional, so it needs a way back to "unset".
         if (entry.hotkey.valid()) {
             ImGui::SameLine();
@@ -567,7 +579,7 @@ void draw_macros_tab(DashboardContext& context) {
             }
 
             const auto draw_control_key = [&](const char* id, const char* label,
-                                              Chord& chord) {
+                                              Chord& chord, AppConfig::ControlKey own) {
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted(label);
                 ImGui::SameLine();
@@ -580,10 +592,13 @@ void draw_macros_tab(DashboardContext& context) {
                     chord = result.chord;
                     config_changed = true;
                 }
-                // Compare against every control key except this one's own
-                // value, which would otherwise always collide with itself and
-                // leave the warning permanently on screen.
-                if (!chord.valid() || config.chord_is_reserved_except(chord, chord)) {
+                // Compare against every control key except this one's own slot,
+                // and against ordinary bindings too: a macro control chord that
+                // is also a binding can never fire, because the hook thread
+                // handles control keys first.
+                if (!chord.valid() ||
+                    config.chord_is_reserved_except(chord, own) ||
+                    config.chord_in_use(chord)) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors::kWarning),
                                        "%s", tr.tr("macro.reserved").data());
@@ -592,11 +607,11 @@ void draw_macros_tab(DashboardContext& context) {
             // macro.key has to stay distinct from the other two, otherwise the
             // first chord checked on the hook thread wins silently.
             draw_control_key("macro_record_key", tr.tr("macro.record_key").data(),
-                             macros.record_key);
+                             macros.record_key, AppConfig::ControlKey::MacroRecord);
             draw_control_key("macro_play_key", tr.tr("macro.play_key").data(),
-                             macros.play_key);
+                             macros.play_key, AppConfig::ControlKey::MacroPlay);
             draw_control_key("macro_stop_key", tr.tr("macro.stop_key").data(),
-                             macros.stop_key);
+                             macros.stop_key, AppConfig::ControlKey::MacroStop);
             if (macros.record_key == macros.play_key ||
                 macros.record_key == macros.stop_key ||
                 macros.play_key == macros.stop_key) {

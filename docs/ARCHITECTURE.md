@@ -170,11 +170,10 @@ this thread. In order:
 4. Capture mode returns "do not swallow" and stops there. See below.
 5. Events carrying the playback tag are dropped and passed through. They were
    produced by the macro player, not by the user.
-6. The panic chord toggles the enable flag, requests a release, and swallows
-   both the press and the release. Pause/Break also requests a macro stop before
-   the toggle, so the panic key always ends playback even when the macro control
-   keys were moved. The panic check runs before the binding table and before the
-   enable flag, because it is the way out of a bad configuration.
+6. The panic chord toggles the enable flag, requests a release, cancels a macro
+   recording, requests a macro stop, and swallows both the press and the
+   release. The panic check runs before the binding table and before the enable
+   flag, because it is the way out of a bad configuration.
 7. The mouse-mode and auto-click toggle chords flip their runtime switches and
    are swallowed. Their releases are swallowed only when the matching press was
    swallowed, so a plain `M` still delivers its key-up while `Ctrl+Alt+M` is the
@@ -182,9 +181,15 @@ this thread. In order:
 8. The macro control chords (record, play/pause, stop) queue a one-shot request
    for the UI thread and are swallowed. Auto-repeat does not queue a second
    request: the key must come up first.
+   Steps 6 to 8 identify an auto-repeat by the base key alone, not by the
+   modifier mask. Windows repeats the key-down with whatever modifiers are down
+   at that moment, so a consumed chord whose modifiers were released first would
+   otherwise leak the repeat to the application while its key-up stayed
+   swallowed.
 9. A per-macro hotkey is looked up in the published `MacroHotkeyTable` and
    reported as an index into it; the UI thread resolves the id. The chord and its
-   release are swallowed, and holding the key does not retrigger it.
+   release are swallowed, and holding the key does not retrigger it. The same
+   base-key rule covers its auto-repeat.
 10. While a recording is active, keyboard events are also pushed to the key ring
     (only when keyboard capture is on), and then continue to the binding table.
     The recorder observes keys; it never swallows them.
@@ -312,8 +317,14 @@ apply_config_to_engine()
   ├─ BindingTableStore::publish()   normal and mouse-mode tables
   ├─ MacroHotkeyStore::publish()    per-macro hotkey table
   ├─ AutoClickScheduler::configure() keep or restart each task countdown
-  └─ release_all()                  clear stuck keys and stop playback
+  └─ release_all()                  only when the binding lists changed
 ```
+
+Automatic profile switching runs on a separate runtime profile. The engine is
+given a copy of the configuration whose `active_profile` is that runtime index,
+so focus changes never move the selection the Profiles tab edits and never mark
+the configuration dirty. Selecting a profile by hand adopts it as the runtime
+profile on the next apply; `keymouse.exe` in the foreground is ignored.
 
 The configuration holds macro metadata (id, display name, hotkey). The steps
 live in one `.kmacro` file per macro under `%LOCALAPPDATA%\KeyMouse\macros`,

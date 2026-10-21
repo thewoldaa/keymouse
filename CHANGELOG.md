@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-21
+
+A second correctness release, driven by the post-0.3.1 audit in issue #2. No
+features were added and no configuration schema changed; existing `config.json`
+and `.kmacro` files load as they are.
+
+### Fixed
+
+- **The reserved-key warning on macro control keys works again.** The 0.3.1 fix
+  passed the key as both the chord and the "ignore" argument, which made the
+  comparison impossible and disabled the warning entirely. The check now names
+  the control key it is skipping, so each picker is compared against the other
+  five and never against itself.
+- **A chorded control key keeps swallowing its auto-repeat.** After `Ctrl+Alt+M`
+  was consumed, releasing the modifiers while `M` stayed down let the OS
+  auto-repeat leak to the foreground application, which then saw a key-down
+  whose key-up was swallowed and kept `M` stuck. The same fix covers the panic
+  key, the auto-click key, the macro record/play/stop chords, and per-macro
+  hotkeys.
+- **`Break` only stops macros when it is the panic key.** A hardcoded check made
+  `Pause` stop playback even when the panic key had been rebound, without
+  swallowing it.
+- **Config reloads no longer drop held keys.** Applying a configuration
+  released every held action, so dragging the speed slider, pressing
+  `SpeedUp`/`SpeedDown`, or any unrelated setting stopped a held movement key.
+  The routers are rebuilt and held keys released only when the bindings
+  actually changed.
+- **A tap on a held button no longer releases it.** A `Tap` click on a button
+  that a drag lock or a `Hold` binding had already pressed sent an up event and
+  let go of it. All button injection now derives from a single held-state mask,
+  so the drag lock and a left-click binding cannot release each other, and
+  `release_all()` emits exactly one release per button.
+- **Toggling an action off no longer stops it while another key holds it.** A
+  `Toggle` chord sharing an action with a `Hold` chord reported the action as
+  stopped on the off-press; it now reports the combined state.
+- **Auto-repeat no longer re-fires a tap or toggle after a release.** The router
+  kept its "which keys are down" state across `release_all()`, so a key still
+  held when the engine was disabled could fire again on the next repeat.
+- **Media, CJK, and `Pause` keys play back correctly.** The scan code table
+  mapped media and CJK keys to the ACPI power/sleep/wake scan codes and `Pause`
+  to `Ctrl+Break`, which made the backend's virtual-key fallback unreachable
+  dead code. Those entries are gone, so those keys take the virtual-key path;
+  `Pause` is injected as `VK_PAUSE`.
+- **Automatic profile switching no longer overrides the profile being edited.**
+  The foreground rules moved `active_profile`, so selecting a profile in the
+  Profiles tab and then focusing KeyMouse's own window yanked the selection to
+  the fallback. The engine now follows a separate runtime profile, the selection
+  is left alone, and `keymouse.exe` is ignored.
+- **Foreground polling starts immediately when it becomes necessary.** The poll
+  timestamp was advanced before the "nothing needs this" early return, so
+  opening the dashboard or enabling a filtered auto-click task waited up to one
+  poll period.
+- **A macro recording interrupted by the panic key or the lock screen is
+  discarded.** The partial fragment used to be saved as a macro, adding an empty
+  or truncated entry to the library. Empty recordings are also no longer stored.
+- **Unsaved macro editor changes survive New, Duplicate, Import, and a finished
+  recording.** Each of those replaces the editor content and silently discarded
+  pending edits.
+- **One pixel of mouse jitter no longer pauses playback.** Movement is compared
+  against the configured movement filter, so clicking Play or Resume no longer
+  stops the macro before it starts.
+- **The Fn layer picker only offers keys the chord recorder can see.** Media and
+  CJK keys have no recorder mapping, so choosing one made `Fn + X` impossible to
+  record. The chord recorder also shows held modifiers live instead of leaving
+  a stale preview when they are released.
+- **The panic-key conflict message stays on screen** instead of flashing for one
+  frame, and the panic-key picker now records Fn chords and checks the other
+  control keys.
+- **Per-macro hotkeys warn about conflicts**, and `chord_in_use()` now counts
+  macro hotkeys, so a hotkey that shadows a binding is reported.
+- **The keyboard hook thread wakes on its own.** It used a blocking
+  `GetMessageW`, so a `WM_QUIT` posted before the message queue existed could
+  make shutdown hang. It now uses the same timed wait as the mouse hook.
+
 ## [0.3.1] - 2026-10-20
 
 A correctness release for 0.3.0, driven by the code audit in issue #2. No

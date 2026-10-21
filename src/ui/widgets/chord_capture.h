@@ -49,6 +49,12 @@ struct ChordCaptureResult {
 ChordCaptureResult chord_capture(const char* id, const Chord& current, const I18n& tr,
                                  KeyId fn_layer_key = key::Invalid);
 
+// True when `key` can be picked as the Fn layer key: a non-modifier key that
+// the chord recorder can actually recognize. Key pickers must use this so the
+// user cannot choose a key that no recorder will ever see (media keys, CJK
+// keys, Escape, which cancels the recorder).
+bool is_capturable_fn_key(KeyId key);
+
 // Draws a button that turns into a single-key recorder. Unlike chord_capture()
 // this accepts modifier keys, which is what the macro step editor needs: a
 // KeyDown step for "Shift" is a real physical key, not a chord base.

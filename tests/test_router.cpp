@@ -283,3 +283,53 @@ TEST_CASE("route results carry the binding mode") {
     router.on_key_up(key::Numpad0);
     CHECK(router.on_key_down(key::NumpadDecimal, ModFn).mode == BindMode::Toggle);
 }
+
+TEST_CASE("release_all keeps held keys so auto-repeat does not re-fire a tap") {
+    Router router = make_router();
+    router.on_key_down(key::Numpad0, ModCtrl);  // tap; still physically held
+
+    router.release_all();
+
+    // Windows repeats WM_KEYDOWN while the key is down. The repeat must not
+    // look like a fresh press and fire the tap a second time.
+    const RouteResult repeat = router.on_key_down(key::Numpad0, ModCtrl);
+    CHECK_FALSE(repeat.changed);
+    CHECK(router.on_key_up(key::Numpad0).action == Action::ClickLeft);
+
+    // After a real release, the next press fires again.
+    CHECK(router.on_key_down(key::Numpad0, ModCtrl).changed);
+}
+
+TEST_CASE("forget_held_keys drops the physical state after a session change") {
+    Router router = make_router();
+    router.on_key_down(key::Numpad0, ModCtrl);
+    router.forget_held_keys();
+    // The key-up after a dropped state is a no-op, and the next press is new.
+    CHECK(router.on_key_up(key::Numpad0).action == Action::None);
+    CHECK(router.on_key_down(key::Numpad0, ModCtrl).changed);
+}
+
+TEST_CASE("toggling off does not stop an action another key still holds") {
+    Router router;
+    router.set_bindings({
+        hold(Action::MoveUp, ModNone, key::ArrowUp),
+        toggle(Action::MoveUp, ModNone, key::KeyG),
+    }, key::Menu);
+
+    CHECK(router.on_key_down(key::KeyG, ModNone).active);
+    router.on_key_up(key::KeyG);
+
+    // The hold key starts the action; the toggle's off-press must not report
+    // the action as stopped while ArrowUp is still down.
+    router.on_key_down(key::ArrowUp, ModNone);
+    const RouteResult off = router.on_key_down(key::KeyG, ModNone);
+    CHECK(off.active);
+    CHECK_FALSE(off.changed);
+    CHECK(router.is_action_active(Action::MoveUp));
+
+    // Releasing the hold key still leaves the toggle... which is now off, so
+    // the action ends.
+    const RouteResult up = router.on_key_up(key::ArrowUp);
+    CHECK_FALSE(up.active);
+    CHECK(up.changed);
+}

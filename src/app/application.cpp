@@ -192,6 +192,8 @@ bool Application::initialize(int argc, wchar_t** argv) {
 
     paths::ensure_data_dir();
     load_config();
+    runtime_profile_ = config_.active_profile;
+    last_seen_active_profile_ = config_.active_profile;
 
     if (options_.safe_mode) {
         // Safe mode ignores the saved configuration entirely, including
@@ -750,11 +752,32 @@ void Application::apply_config_to_engine() {
         // backend knows the physical key state.
         backend_->set_fn_layer_key(config_.fn_layer_key);
     }
+    // A change to the selection in the Profiles tab is a user choice, so the
+    // runtime profile follows it. Automatic switching moves runtime_profile_
+    // alone and never touches the selection.
+    if (config_.active_profile != last_seen_active_profile_) {
+        last_seen_active_profile_ = config_.active_profile;
+        runtime_profile_ = config_.active_profile;
+    }
     if (engine_) {
-        engine_->apply_config(config_);
+        // The engine follows the runtime profile, which an automatic switch can
+        // move without touching the selection the Profiles tab shows.
+        AppConfig engine_config = config_;
+        engine_config.active_profile = runtime_profile_;
+        engine_->apply_config(engine_config);
     }
     sync_tray_visibility();
     update_tray_status();
+}
+
+void Application::apply_runtime_profile() {
+    // Same as apply_config_to_engine(), for the case where only the runtime
+    // profile changed and the selection must stay untouched.
+    if (engine_) {
+        AppConfig engine_config = config_;
+        engine_config.active_profile = runtime_profile_;
+        engine_->apply_config(engine_config);
+    }
 }
 
 void Application::reload_locale() {
@@ -782,9 +805,11 @@ void Application::on_session_event(session::SessionEvent event) {
                 engine_->consume_beep_request();
                 engine_->request_release();
                 // A macro recording or playing across a lock would capture the
-                // lock screen or keep clicking behind it.
+                // lock screen or keep clicking behind it. The recording is
+                // cancelled rather than stored: it was cut short by the lock,
+                // not finished by the user.
                 engine_->request_macro_stop();
-                engine_->stop_macro_recording();
+                engine_->cancel_macro_recording();
             }
             platform::stop_mouse_hook();
             break;
@@ -1117,6 +1142,21 @@ void Application::save_macro_edit() {
 }
 
 void Application::store_finished_recording(Macro macro) {
+    // A recording abandoned at the very start (panic key, lock screen) has
+    // nothing worth keeping; storing it would add an empty entry to the
+    // library and a stray .kmacro file.
+    if (macro.steps.empty()) {
+        dashboard_.macro_message = std::string(i18n_.tr("macro.empty_recording").data());
+        return;
+    }
+
+    // The editor may hold unsaved changes for the macro the user was working
+    // on; loading the new recording over it would silently throw them away.
+    if (dashboard_.macro_edit.dirty) {
+        dashboard_.macro_edit.dirty = false;
+        save_macro_edit();
+    }
+
     macro.name = next_macro_name();
     macro.id = unique_macro_id(macro.name);
 
@@ -1140,6 +1180,13 @@ void Application::store_finished_recording(Macro macro) {
 }
 
 void Application::new_macro() {
+    // Unsaved editor changes are flushed before the editor is repointed, or
+    // they would be lost without a word.
+    if (dashboard_.macro_edit.dirty) {
+        dashboard_.macro_edit.dirty = false;
+        save_macro_edit();
+    }
+
     Macro macro;
     macro.name = next_macro_name();
     macro.id = unique_macro_id(macro.name);
@@ -1164,6 +1211,14 @@ void Application::new_macro() {
 }
 
 void Application::duplicate_macro(const std::string& id) {
+    // The duplicate may be taken from the editor copy, but any unsaved edits
+    // to the macro currently open must be saved first: the duplicate replaces
+    // the editor content, and without this the user's edits vanish.
+    if (dashboard_.macro_edit.dirty) {
+        dashboard_.macro_edit.dirty = false;
+        save_macro_edit();
+    }
+
     Macro copy;
     if (dashboard_.macro_edit.loaded && dashboard_.macro_edit.macro.id == id) {
         copy = dashboard_.macro_edit.macro;
@@ -1220,6 +1275,12 @@ void Application::delete_macro(const std::string& id) {
 void Application::import_macro() {
     static constexpr wchar_t kFilter[] =
         L"KeyMouse macros (*.kmacro)\0*.kmacro\0All files (*.*)\0*.*\0";
+
+    // The import replaces the editor content; save pending edits first.
+    if (dashboard_.macro_edit.dirty) {
+        dashboard_.macro_edit.dirty = false;
+        save_macro_edit();
+    }
 
     const auto picked = platform::open_file_dialog(L"Import macro", kFilter);
     if (!picked) {
@@ -1353,11 +1414,13 @@ void Application::poll_foreground() {
     if (now - last_foreground_poll_ < kForegroundPollPeriod) {
         return;
     }
-    last_foreground_poll_ = now;
 
     // The query opens the foreground process, which is not free. Skip it when
     // nothing consumes the answer: the window is hidden, profiles do not switch
-    // automatically, and no auto-click task is filtered by application.
+    // automatically, and no auto-click task is filtered by application. The
+    // timestamp is only advanced once a poll actually runs, so enabling
+    // auto-click or opening the dashboard takes effect on the next iteration
+    // instead of up to one poll period later.
     bool any_app_filter = false;
     if (config_.auto_click.enabled) {
         for (const AutoClickTask& task : config_.auto_click.tasks) {
@@ -1372,6 +1435,7 @@ void Application::poll_foreground() {
     if (!window_visible_ && !profile_switching && !any_app_filter) {
         return;
     }
+    last_foreground_poll_ = now;
 
     foreground_exe_ = screen::foreground_exe_name();
     if (engine_) {
@@ -1382,21 +1446,36 @@ void Application::poll_foreground() {
         return;
     }
 
-    static std::string last_exe;
-    if (foreground_exe_ == last_exe) {
+    // The dashboard itself must not trigger a switch. With no profile matching
+    // "keymouse.exe", match_profile() would return the fallback and yank the
+    // selection away from whatever profile the user is editing.
+    if (foreground_exe_.empty() || foreground_exe_ == "keymouse.exe") {
         return;
     }
-    last_exe = foreground_exe_;
+
+    if (foreground_exe_ == last_profile_exe_) {
+        return;
+    }
+    last_profile_exe_ = foreground_exe_;
+
+    // The user's selection in the Profiles tab wins until something else is
+    // focused: it is an explicit edit target, not a runtime choice.
+    if (config_.active_profile != last_seen_active_profile_) {
+        last_seen_active_profile_ = config_.active_profile;
+        runtime_profile_ = config_.active_profile;
+        return;
+    }
 
     const ProfileMatch match = match_profile(config_, foreground_exe_);
-    if (match.matched && match.index != config_.active_profile) {
-        config_.active_profile = match.index;
-        // The switch is runtime state, not a user edit: apply it once and do
-        // not mark the config dirty. Marking it dirty would make the main loop
-        // apply the same config a second time and rewrite config.json on every
-        // Alt-Tab.
-        apply_config_to_engine();
+    if (!match.matched || match.index == runtime_profile_) {
+        return;
     }
+    runtime_profile_ = match.index;
+    // The switch is runtime state, not a user edit: apply it once, leave
+    // config_.active_profile alone so the user's selection stays, and do not
+    // mark the config dirty. Marking it dirty would rewrite config.json on
+    // every Alt-Tab and persist a profile the user never chose.
+    apply_runtime_profile();
 }
 
 LRESULT CALLBACK Application::window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {

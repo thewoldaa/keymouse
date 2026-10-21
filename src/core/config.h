@@ -65,9 +65,15 @@ struct MacroEntry {
 struct MacroConfig {
     std::vector<MacroEntry> entries;
 
-    // Capture keyboard events while recording. Off by default (spec 16.2):
-    // most recordings are mouse-only.
-    bool record_keyboard = false;
+    // Capture keyboard events while recording. On by default: a macro that
+    // presses keys is the common case (a game combo, a movement burst), and
+    // leaving them out silently produced recordings that only half worked.
+    bool record_keyboard = true;
+    // While a mouse button is held, record movement as a relative delta
+    // instead of an absolute position. This is what turns the camera in a
+    // first-person game; turning it off gives a classic desktop recording
+    // where a drag is just a path across the screen.
+    bool record_pov_drag = true;
     // Points closer than this are dropped from recorded movement. 0.5 to 16 px.
     double move_tolerance_px = 3.0;
 

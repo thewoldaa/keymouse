@@ -345,6 +345,7 @@ TEST_CASE("validate catches duplicate auto-click task ids") {
 TEST_CASE("the macro library survives a json roundtrip") {
     AppConfig original = make_default_config();
     original.macros.record_keyboard = true;
+    original.macros.record_pov_drag = false;
     original.macros.move_tolerance_px = 4.5;
     original.macros.record_key = Chord{ModCtrl | ModShift, key::KeyR};
     original.macros.play_key = Chord{ModCtrl | ModShift, key::KeyP};
@@ -359,6 +360,7 @@ TEST_CASE("the macro library survives a json roundtrip") {
     REQUIRE_MESSAGE(parsed.has_value(), error);
 
     CHECK(parsed->macros.record_keyboard);
+    CHECK_FALSE(parsed->macros.record_pov_drag);
     CHECK(parsed->macros.move_tolerance_px == doctest::Approx(4.5));
     CHECK(parsed->macros.record_key == Chord{ModCtrl | ModShift, key::KeyR});
     CHECK(parsed->macros.play_key == Chord{ModCtrl | ModShift, key::KeyP});

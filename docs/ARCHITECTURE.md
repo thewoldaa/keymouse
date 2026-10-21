@@ -86,8 +86,8 @@ Windows 10 before 1803, which is what used to starve this loop.
                                                         └─► SendInput() / SetCursorPos()
 
     MSLLHOOKSTRUCT ───►│ MacroInputEvent ──────────────►│ macro ring
-                        │  (tagged when injected)        │  ├─► recorder (untagged only)
-                        │                                │  └─► pause a running playback
+                        │  + physical button mask        │  ├─► recorder (untagged only)
+                        │  (tagged when injected)        │  └─► pause a running playback
 ```
 
 The hook callback may not allocate, lock, or perform I/O. Everything expensive
@@ -192,7 +192,8 @@ this thread. In order:
    base-key rule covers its auto-repeat.
 10. While a recording is active, keyboard events are also pushed to the key ring
     (only when keyboard capture is on), and then continue to the binding table.
-    The recorder observes keys; it never swallows them.
+    The recorder observes keys; it never swallows them. A repeated key-down is
+    the OS auto-repeat and is dropped: the recording already has the press.
 11. The lookup uses the plain-key table while mouse mode is on and the active
     profile's chord table otherwise. Otherwise the swallow decision is a single
     `BindingTable::find()` and a comparison; the matching key-up is swallowed
@@ -208,12 +209,15 @@ the hook timeout.
 the macro rings into the recorder (before the requests, so a stop request still
 captures the events that arrived just before it), and applies the one-shot macro
 requests: start or stop recording, play, pause, resume, stop, and per-macro
-hotkeys. It then drains the keyboard ring and runs `Router`, which does allocate
-(it uses `std::unordered_map`). `Engine::tick` ticks the macro player against the
-injected clock, then integrates motion and scroll by the measured `dt`, polls the
-auto-click scheduler, and injects the result. A focused-away or locked session
-arrives as an ordinary queued event and releases everything held; a lock also
-disarms mouse mode and stops recording and playback.
+hotkeys. Stopping a recording runs `MacroRecorder::finish`, which closes any
+button or key the recording still holds with a release step, so a playback can
+never end mid-drag. It then drains the keyboard ring and runs `Router`, which
+does allocate (it uses `std::unordered_map`). `Engine::tick` ticks the macro
+player against the injected clock, then integrates motion and scroll by the
+measured `dt`, polls the auto-click scheduler, and injects the result. A
+focused-away or locked session arrives as an ordinary queued event and releases
+everything held; a lock also disarms mouse mode and stops recording and
+playback.
 
 The player ticks in front of the master-switch check: the switch controls key
 handling, and a macro started from the dashboard must still run when it is off.
@@ -266,6 +270,28 @@ converts the tag to `MacroInputEvent::injected`; the recorder drops those events
 and counts them, and the engine drops tagged keyboard events before any binding.
 Mouse-mode and auto-click injections stay untagged on purpose: they are ordinary
 input, so keyboard-driven cursor movement is recordable.
+
+### Camera drags in the recorder
+
+A first-person game turns the view from raw relative mouse deltas, not from the
+cursor position. An absolute `move_to` step therefore reproduces the pointer
+path while the camera stays put. The recorder handles this by storing a
+`mouse_delta` step (`MacroStepType::MouseDelta`, `x`/`y` are the delta) instead
+of a `move` step whenever a mouse button is held; the player replays it with
+relative `SendInput`.
+
+The decision needs the button state, and a stream of hook events is not enough:
+a user who holds the aim button and then presses Record never produces a
+`ButtonDown` in that stream. The Win32 hook therefore samples the OS button mask
+with `GetAsyncKeyState` and attaches it to every `MacroInputEvent`
+(`buttons_down` + `buttons_known`). Sourced from the OS, the mask also repairs a
+release the stream missed, so a lost `ButtonUp` cannot turn the rest of the
+recording into camera deltas.
+
+What the mask does *not* do is synthesize a press for a button the recording
+never saw go down. Replaying an unrequested press is actively wrong — LMB is a
+shot in most games, RMB is aim — so such a macro simply assumes the button is
+still held, which is exactly the state it was recorded in.
 
 The one thing that does need care is that injected *movement* passes through the
 Windows pointer settings when sent as relative `SendInput`, which applies pointer

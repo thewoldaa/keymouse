@@ -185,6 +185,12 @@ void MacroPlayer::execute(const MacroStep& step) {
             backend_.move_to(x, y);
             break;
         }
+        case MacroStepType::MouseDelta:
+            // Relative injection. A game reads the delta, not the cursor
+            // position, so this is what actually turns the camera; the cursor
+            // itself is left where the application wants it.
+            backend_.move(step.x, step.y);
+            break;
         case MacroStepType::ButtonDown: {
             if (step.data >= 0 && step.data <= static_cast<int32_t>(MouseButton::X2)) {
                 const auto button = static_cast<MouseButton>(step.data);

@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-21
+
+Macros now record the keyboard by default and can record a first-person camera
+turn as relative movement, so a recorded aiming or looking sequence actually
+turns the view on playback instead of teleporting the pointer. No configuration
+schema change; existing `config.json` and `.kmacro` files load as they are.
+
+### Added
+
+- **Camera drag recording.** While a mouse button is held, movement is recorded
+  as a relative `mouse_delta` step rather than an absolute position. A game
+  reads raw mouse deltas to turn the camera, so an absolute `move` step used to
+  place the cursor correctly while the view never moved. The choice is a
+  setting (`macros.record_pov_drag`, on by default, **Camera drag** in the
+  Macros tab); turning it off restores classic desktop drags.
+- **Drags that began before Record are detected.** The mouse hook reports the
+  physical button mask with every event, so pressing and holding the aim button
+  and then starting the recording still produces camera deltas from the first
+  sample. Nothing is synthesized for that press: replaying a press the user did
+  not perform (LMB is a shot in most games) is worse than assuming the button
+  is still held, which is how the recording was made.
+- **A `mouse_delta` step in the editor**, with editable x/y deltas and its own
+  default for **Add step**. Format 2 of the `.kmacro` file; a variable-speed
+  playback turns the view at the recorded rate.
+- **Live recording counters** for camera steps and key steps, shown next to the
+  step count while recording. A capture that recorded nothing useful (wrong
+  button, a game reading input outside the hook) is visible before the user
+  stops and loses it.
+
+### Changed
+
+- **Keyboard capture is on by default.** A macro that presses keys is the
+  common case, and leaving them out silently produced recordings that only half
+  worked. The checkbox and its tooltip now say that captured keys still reach
+  the foreground application.
+- **A recording is balanced when it stops.** Buttons and keys still held at the
+  end get a release step, stamped at the last event's time, so replaying a macro
+  cut short mid-drag or mid-run cannot leave the desktop or the game holding
+  input — and a looped macro does not loop with it stuck down.
+- **Keyboard auto-repeat is not recorded.** Holding W used to write a key-down
+  step for every OS repeat; the recording now writes one press and one release.
+- **An unpaired keyboard release is dropped.** The modifiers of the record
+  chord itself are pressed before the recording starts, so their releases used
+  to land in the macro as key-ups of keys it never pressed.
+- **The `.kmacro` format is version 2.** Older files load unchanged, and a file
+  from a newer build is rejected with a message naming the version instead of a
+  confusing "unknown step type".
+
 ## [0.3.2] - 2026-10-21
 
 A second correctness release, driven by the post-0.3.1 audit in issue #2. No

@@ -78,7 +78,8 @@ struct EngineConfig {
 
     // Macro recording and playback. The per-macro hotkeys are a flat list
     // rebuilt from the library on every apply_config().
-    bool macro_record_keyboard = false;
+    bool macro_record_keyboard = true;
+    bool macro_record_pov_drag = true;
     double macro_move_tolerance_px = 3.0;
     Chord macro_record_key{ModCtrl | ModAlt, key::KeyR};
     Chord macro_play_key{ModCtrl | ModAlt, key::KeyP};
@@ -215,6 +216,16 @@ public:
     }
     uint64_t macro_recording_steps() const {
         return recording_steps_.load(std::memory_order_relaxed);
+    }
+    // How much of the live recording is camera-delta movement and how much is
+    // keys. Shown while recording so a "nothing happened" capture (the game
+    // read the mouse through raw input, the drag started before the hook) is
+    // visible before the user stops and loses it.
+    uint64_t macro_recording_camera_steps() const {
+        return recording_camera_steps_.load(std::memory_order_relaxed);
+    }
+    uint64_t macro_recording_key_steps() const {
+        return recording_key_steps_.load(std::memory_order_relaxed);
     }
     bool consume_recorded_macro(Macro& out);
 
@@ -412,12 +423,15 @@ private:
 
     // Recording state.
     std::atomic<bool> recording_active_{false};
-    std::atomic<bool> recording_keyboard_{false};
+    std::atomic<bool> recording_keyboard_{true};
+    std::atomic<bool> record_pov_drag_{true};
     std::atomic<bool> record_start_requested_{false};
     std::atomic<bool> record_stop_requested_{false};
     // Abort without handing the partial macro back (panic key, session lock).
     std::atomic<bool> record_cancel_requested_{false};
     std::atomic<uint64_t> recording_steps_{0};
+    std::atomic<uint64_t> recording_camera_steps_{0};
+    std::atomic<uint64_t> recording_key_steps_{0};
     std::atomic<double> macro_tolerance_px_{3.0};
     // Engine thread only. Last cursor position seen while a macro was playing,
     // used to tell a real mouse move from sensor jitter.

@@ -21,7 +21,7 @@ It is built for two groups:
 
 ## Status
 
-Version 0.3.2. Windows only. The core is platform independent so Linux and
+Version 0.3.3. Windows only. The core is platform independent so Linux and
 macOS backends can be added without rewriting the logic; see
 [docs/PORTING.md](docs/PORTING.md).
 
@@ -65,11 +65,11 @@ Task Manager unless KeyMouse itself is run elevated.
 
 Each release is published in two forms:
 
-- **`KeyMouse-0.3.2-setup.exe`** — per-user install, no administrator prompt and
+- **`KeyMouse-0.3.3-setup.exe`** — per-user install, no administrator prompt and
   no `Program Files`. The wizard speaks English, Russian, Japanese, and
   Indonesian, and copies the documentation next to the application. Uninstalling
   asks whether to keep your settings.
-- **`KeyMouse-0.3.2-win64.zip`** — portable. Unpack it anywhere and run
+- **`KeyMouse-0.3.3-win64.zip`** — portable. Unpack it anywhere and run
   `KeyMouse.exe`; nothing is written outside `%LOCALAPPDATA%\KeyMouse`.
 
 Both are unsigned, so Windows SmartScreen may warn the first time.
@@ -198,9 +198,23 @@ The Macros tab records a sequence of mouse actions and plays it back.
 mouse hook for the duration; every movement, click, and scroll is captured until
 the same chord is pressed again. The movement filter drops points closer
 together than the chosen tolerance — three pixels by default — which keeps a
-recording at a few hundred steps instead of tens of thousands. Keyboard capture
-is a checkbox and off by default; when it is on the keys are recorded *and* still
-reach the foreground application, because capture runs alongside normal routing.
+recording at a few hundred steps instead of tens of thousands.
+
+**Camera drags.** While a mouse button is held, movement is written as a
+relative step instead of an absolute position. That is what turns the view in a
+first-person game: those games read the raw mouse delta, so an absolute position
+would move the cursor on playback but leave the camera where it was. The
+detection does not depend on the recording having seen the button press, so
+holding the aim button and *then* pressing Record still records a camera turn
+from the first sample. Clearing **Camera drag** in the Macro settings restores
+classic desktop drags, where a held drag is a path across the screen.
+
+**Keyboard.** Keyboard capture is on by default. Recorded keys are written into
+the macro *and* still reach the foreground application while recording, because
+capture runs alongside normal routing. Holding a key produces one press step
+and one release, not one step per OS repeat. Buttons and keys that are still
+held when the recording stops get a release step at the end, so a macro cut
+short mid-drag cannot leave the machine holding the button or the key.
 
 **Playback.** **Play** (`Ctrl+Alt+P`) starts the selected macro, and the same
 chord pauses and resumes. **Stop** (`Ctrl+Alt+S`) and the panic key (Pause) end
@@ -215,7 +229,8 @@ Mouse-mode movement, on the other hand, is ordinary input and *is* recorded if
 the mode is on while recording.
 
 **Editing.** The step table shows the delay, type, and details of every row.
-Delays, coordinates, buttons, wheel deltas, and keys are edited in place; rows
+Delays, coordinates, buttons, wheel deltas, and keys are edited in place; a
+camera-drag row edits its relative x/y pair instead of a screen position. Rows
 can be inserted, duplicated, moved up or down, and deleted; **From cursor** fills
 in the current pointer position for a movement step; halving and doubling
 delays rescale the whole sequence; and the play button starts from the selected
@@ -227,7 +242,9 @@ Macros are readable JSON files with a `.kmacro` extension in
 
 Macros replay absolute screen coordinates. They do not follow a window that
 moved, and a different resolution or DPI scale invalidates them: re-record after
-rearranging the desktop.
+rearranging the desktop. Camera-drag steps are relative, so they are unaffected
+by resolution changes — but they do sit inside the whole sequence, and the
+absolute steps around them still assume the layout they were recorded on.
 
 ## Configuration
 
@@ -263,7 +280,8 @@ human-readable and hand-editable; KeyMouse validates and repairs it on load.
     "tasks": []
   },
   "macros": {
-    "record_keyboard": false,
+    "record_keyboard": true,
+    "record_pov_drag": true,
     "move_tolerance_px": 3.0,
     "record_key": { "mods": ["ctrl", "alt"], "key": "KeyR" },
     "play_key": { "mods": ["ctrl", "alt"], "key": "KeyP" },
@@ -307,7 +325,10 @@ the app always starts.
 | Auto-click has a one-second minimum interval | It is a scheduler for periodic actions, not a rapid-fire clicker |
 | Auto-click only runs while KeyMouse is enabled | Its master switch and the KeyMouse enable switch are independent; both must be on |
 | Mouse mode is off after upgrading to 0.2.0 | It is an additional layer, so existing chord users are not surprised; turn it on with `Ctrl+Alt+M` or enable "start with the application" |
-| Macros replay absolute coordinates | Recorded against one screen layout; window moves, resolution changes, and DPI changes invalidate a recording. Re-record after rearranging |
+| Macros replay absolute coordinates | Recorded against one screen layout; window moves, resolution changes, and DPI changes invalidate a recording. Re-record after rearranging. Camera-drag steps are relative and unaffected, but the absolute steps around them are not |
+| A camera drag needs the button to be held | Movement is recorded as a relative delta only while a mouse button is down. Smooth mouse-look with no button held is ordinary pointer movement and is stored as absolute positions |
+| A game must accept injected relative movement | Camera drags are replayed with relative `SendInput`, which some raw-input games ignore; see [docs/GAME-COMPAT.md](docs/GAME-COMPAT.md) |
+| A button held before Record is not re-pressed | The recording uses it to detect the drag but does not synthesize a press; replay it while holding the button, as you recorded it |
 | A real mouse movement or click pauses playback | So the user can take control without waiting for the macro to end; resume from the dashboard or with the play chord |
 | Keyboard capture does not swallow keys | Capture runs alongside normal routing, so the foreground application still receives the keys that are being recorded |
 | Some games ignore injected input | They read Raw Input rather than the standard message queue |
@@ -320,7 +341,14 @@ the app always starts.
 
 ## Roadmap
 
-0.3.2 is a second correctness release driven by the post-0.3.1 audit: it fixes
+0.3.3 makes macro recording fit a first-person game: while a mouse button is
+held, movement is stored as a relative camera delta and replayed through
+relative injection, a drag that started before the recording is still
+recognised, keyboard capture is on by default, and a recording is closed
+cleanly — no auto-repeat steps, no unpaired releases, and a release for
+anything still held when it stopped.
+
+0.3.2 was a second correctness release driven by the post-0.3.1 audit: it fixed
 a dead reserved-key check, auto-repeat leaking past a chorded control key,
 config reloads dropping held movement keys, drag lock and left-click fighting
 over the same button, media-key scan codes, and automatic profile switching
@@ -332,7 +360,7 @@ editor, and library on top of the 0.2.0 feature set.
 
 Next:
 
-- **0.4** — macro refinements that were left out of 0.3: undo and redo, row
+- **0.4** — macro refinements still on the list: undo and redo, row
   multi-select, a pick-on-screen coordinate tool, and a tray submenu for the
   macro library
 - **Later** — signed binaries, an optional on-screen position indicator, a

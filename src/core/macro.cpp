@@ -29,6 +29,7 @@ std::string_view macro_step_type_name(MacroStepType type) {
         case MacroStepType::KeyDown: return "key_down";
         case MacroStepType::KeyUp: return "key_up";
         case MacroStepType::Wait: return "wait";
+        case MacroStepType::MouseDelta: return "mouse_delta";
     }
     return "wait";
 }
@@ -41,6 +42,7 @@ MacroStepType macro_step_type_from_name(std::string_view name) {
     if (name == "scroll_h") return MacroStepType::ScrollH;
     if (name == "key_down") return MacroStepType::KeyDown;
     if (name == "key_up") return MacroStepType::KeyUp;
+    if (name == "mouse_delta") return MacroStepType::MouseDelta;
     return MacroStepType::Wait;
 }
 
@@ -90,6 +92,9 @@ std::string macro_to_json(const Macro& macro) {
         item["type"] = std::string(macro_step_type_name(step.type));
         switch (step.type) {
             case MacroStepType::Move:
+            case MacroStepType::MouseDelta:
+                // Both store a screen-space pair; Move means "go to", MouseDelta
+                // means "add this much".
                 item["x"] = step.x;
                 item["y"] = step.y;
                 break;
@@ -114,7 +119,10 @@ std::string macro_to_json(const Macro& macro) {
 
     const json root{
         {"format", "keymouse-macro"},
-        {"version", 1},
+        // 2 added the mouse_delta step. Older builds reject a file that uses
+        // it, which is honest: silently dropping the camera movement would
+        // produce a replay that looks like it worked and does nothing.
+        {"version", kMacroFormatVersion},
         {"id", macro.id},
         {"name", macro.name},
         {"recorded_width", macro.recorded_width},
@@ -136,6 +144,20 @@ std::optional<Macro> macro_from_json(std::string_view text, std::string& error) 
     if (!root.is_object()) {
         error = "The macro root must be a JSON object";
         return std::nullopt;
+    }
+
+    // A file from a newer build can contain step types this build does not
+    // know, and the per-step check below would reject it with a confusing
+    // "unknown step type". Say what the real problem is instead: the file is
+    // newer than the application.
+    if (root.contains("version") && root["version"].is_number_integer()) {
+        const int64_t file_version = root["version"].get<int64_t>();
+        if (file_version > kMacroFormatVersion) {
+            error = "This macro was written by a newer KeyMouse (format " +
+                    std::to_string(file_version) + ", this build reads " +
+                    std::to_string(kMacroFormatVersion) + ")";
+            return std::nullopt;
+        }
     }
 
     Macro macro;
@@ -179,7 +201,8 @@ std::optional<Macro> macro_from_json(std::string_view text, std::string& error) 
         if (type_name != "move" && type_name != "button_down" &&
             type_name != "button_up" && type_name != "scroll" &&
             type_name != "scroll_h" && type_name != "key_down" &&
-            type_name != "key_up" && type_name != "wait") {
+            type_name != "key_up" && type_name != "wait" &&
+            type_name != "mouse_delta") {
             error = "Unknown macro step type '" + type_name + "'" + where;
             return std::nullopt;
         }
@@ -193,6 +216,7 @@ std::optional<Macro> macro_from_json(std::string_view text, std::string& error) 
 
         switch (step.type) {
             case MacroStepType::Move:
+            case MacroStepType::MouseDelta:
                 if (item.contains("x") && item["x"].is_number_integer()) {
                     step.x = clamp_coordinate(item["x"].get<int64_t>());
                 }

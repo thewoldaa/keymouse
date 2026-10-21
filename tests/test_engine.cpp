@@ -520,7 +520,9 @@ TEST_CASE("recording turns mouse events into a macro") {
 
     Macro recorded;
     REQUIRE(engine.consume_recorded_macro(recorded));
-    REQUIRE(recorded.steps.size() == 3);
+    // The left button was still down when the recording stopped, so finish()
+    // appends its release; the macro cannot end mid-drag.
+    REQUIRE(recorded.steps.size() == 4);
     CHECK(recorded.recorded_width == 1920);
     CHECK(recorded.recorded_height == 1080);
     CHECK(recorded.steps[0].type == MacroStepType::Move);
@@ -532,10 +534,71 @@ TEST_CASE("recording turns mouse events into a macro") {
     CHECK(recorded.steps[2].type == MacroStepType::ButtonDown);
     CHECK(recorded.steps[2].dt_ms == 4);
     CHECK(recorded.steps[2].data == static_cast<int32_t>(MouseButton::Left));
+    CHECK(recorded.steps[3].type == MacroStepType::ButtonUp);
+    CHECK(recorded.steps[3].dt_ms == 0);
+    CHECK(recorded.steps[3].data == static_cast<int32_t>(MouseButton::Left));
 
     // The finished macro is handed out exactly once.
     Macro again;
     CHECK_FALSE(engine.consume_recorded_macro(again));
+}
+
+TEST_CASE("recording a camera drag produces relative steps and balanced releases") {
+    FakeBackend backend;
+    int64_t clock = 0;
+    Engine engine(backend, [&clock] { return clock; });
+
+    AppConfig config = make_default_config();
+    config.macros.move_tolerance_px = 2.0;
+    config.macros.record_keyboard = true;
+    config.macros.record_pov_drag = true;
+    engine.apply_config(config);
+    engine.pump();
+
+    engine.start_macro_recording(true);
+    engine.pump();
+    REQUIRE(engine.macro_recording());
+
+    // Right button already held before Record: the hook reports it on the
+    // move, the drag is a camera turn from the very first sample.
+    MacroInputEvent move = mouse_event(MacroInputEvent::Type::MouseMove, 1000, 400, 300);
+    move.buttons_down = 1u << static_cast<unsigned>(MouseButton::Right);
+    engine.on_mouse_event(move);
+
+    move = mouse_event(MacroInputEvent::Type::MouseMove, 2000, 430, 290);
+    move.buttons_down = 1u << static_cast<unsigned>(MouseButton::Right);
+    engine.on_mouse_event(move);
+
+    // A key held while the camera turns, then its OS auto-repeat.
+    InputEvent key_down = event(InputEvent::Type::KeyDown, key::KeyW);
+    key_down.time_us = 3000;
+    CHECK_FALSE(engine.on_input_event(key_down));
+    key_down.time_us = 4000;
+    CHECK_FALSE(engine.on_input_event(key_down));
+
+    engine.pump();
+    CHECK(engine.macro_recording_camera_steps() == 1);
+    CHECK(engine.macro_recording_key_steps() == 1);
+
+    // Stop while the button and W are both still down.
+    engine.stop_macro_recording();
+    engine.pump();
+
+    Macro recorded;
+    REQUIRE(engine.consume_recorded_macro(recorded));
+    // Three steps: the camera delta, and the W press and release that the
+    // recording witnessed. The right button was already down when Record was
+    // pressed, so the macro neither presses nor releases it — replaying an
+    // unrequested press would be far worse than assuming the user still holds
+    // the aim button, which is how the recording was made.
+    REQUIRE(recorded.steps.size() == 3);
+    CHECK(recorded.steps[0].type == MacroStepType::MouseDelta);
+    CHECK(recorded.steps[0].x == 30);
+    CHECK(recorded.steps[0].y == -10);
+    CHECK(recorded.steps[1].type == MacroStepType::KeyDown);
+    CHECK(recorded.steps[1].key == key::KeyW);
+    CHECK(recorded.steps[2].type == MacroStepType::KeyUp);
+    CHECK(recorded.steps[2].key == key::KeyW);
 }
 
 TEST_CASE("keyboard capture only records keys when it is on") {

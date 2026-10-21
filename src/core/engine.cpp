@@ -27,6 +27,7 @@ std::shared_ptr<const EngineConfig> make_engine_config(const AppConfig& config) 
     out->auto_click_tasks = config.auto_click.tasks;
     out->auto_click_enabled = config.auto_click.enabled;
     out->macro_record_keyboard = config.macros.record_keyboard;
+    out->macro_record_pov_drag = config.macros.record_pov_drag;
     out->macro_move_tolerance_px = config.macros.move_tolerance_px;
     out->macro_record_key = config.macros.record_key;
     out->macro_play_key = config.macros.play_key;
@@ -87,6 +88,8 @@ void Engine::apply_config(const AppConfig& config) {
     macro_stop_mods_.store(snapshot->macro_stop_key.mods, std::memory_order_relaxed);
     macro_tolerance_px_.store(snapshot->macro_move_tolerance_px,
                               std::memory_order_relaxed);
+    record_pov_drag_.store(snapshot->macro_record_pov_drag,
+                           std::memory_order_relaxed);
     macro_hotkey_store_.publish(snapshot->macro_hotkeys);
 
     enabled_.store(config.enabled, std::memory_order_relaxed);
@@ -1001,9 +1004,12 @@ void Engine::apply_macro_requests(int64_t now_us) {
             }
             recorder_.start(recording_keyboard_.load(std::memory_order_relaxed),
                             macro_tolerance_px_.load(std::memory_order_relaxed),
-                            width, height);
+                            width, height,
+                            record_pov_drag_.load(std::memory_order_relaxed));
             recording_active_.store(true, std::memory_order_relaxed);
             recording_steps_.store(0, std::memory_order_relaxed);
+            recording_camera_steps_.store(0, std::memory_order_relaxed);
+            recording_key_steps_.store(0, std::memory_order_relaxed);
         }
     }
 
@@ -1120,6 +1126,9 @@ void Engine::drain_macro_events(int64_t now_us) {
 
     if (recording) {
         recording_steps_.store(recorder_.step_count(), std::memory_order_relaxed);
+        recording_camera_steps_.store(recorder_.camera_steps(),
+                                      std::memory_order_relaxed);
+        recording_key_steps_.store(recorder_.key_steps(), std::memory_order_relaxed);
     }
 }
 

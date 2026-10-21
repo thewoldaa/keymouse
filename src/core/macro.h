@@ -26,6 +26,11 @@ enum class MacroStepType : uint8_t {
     KeyDown = 5,     // press a keyboard key
     KeyUp = 6,       // release a keyboard key
     Wait = 7,        // pure delay with no action
+    // Relative mouse movement: add (x, y) to the cursor instead of placing it.
+    // Games that turn the camera read raw relative deltas, so a held-button
+    // drag recorded as absolute positions does not turn the view at all. This
+    // step is what the recorder produces while a button is down.
+    MouseDelta = 8,
 };
 
 std::string_view macro_step_type_name(MacroStepType type);
@@ -74,6 +79,12 @@ bool macro_has_action(const Macro& macro);
 
 // JSON document used by the .kmacro files. `id` is optional: the library stores
 // it in the file name, but keeping it inside makes a shared file self-describing.
+//
+// Format 1 had no mouse_delta step. Format 2 added it; a format-2 file that
+// uses only format-1 steps still loads in an older build, and this build reads
+// every format-1 file unchanged.
+inline constexpr int64_t kMacroFormatVersion = 2;
+
 std::string macro_to_json(const Macro& macro);
 std::optional<Macro> macro_from_json(std::string_view text, std::string& error);
 

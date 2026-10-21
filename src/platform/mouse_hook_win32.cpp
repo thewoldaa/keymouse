@@ -27,6 +27,28 @@ std::mutex g_lifecycle_mutex;
 std::thread g_thread;
 std::atomic<bool> g_installed{false};
 
+// Button state read from the OS at the moment of the event, not inferred from
+// the stream the hook has seen. The recorder needs this because a recording can
+// start while a button is already held — pressing LMB to look around and then
+// pressing Record is the normal way to capture a camera drag — and a stream
+// that never saw the press cannot tell that the drag is in progress.
+//
+// GetAsyncKeyState is cheap enough for a low-level hook and is the only source
+// that includes buttons whose press predates the hook. The low bit ("pressed
+// since the last call") is ignored; 0x8000 is "currently down".
+uint32_t physical_buttons() {
+    uint32_t mask = 0;
+    const auto bit = [&mask](MouseButton button) {
+        mask |= 1u << static_cast<unsigned>(button);
+    };
+    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) bit(MouseButton::Left);
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) bit(MouseButton::Right);
+    if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) bit(MouseButton::Middle);
+    if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) bit(MouseButton::X1);
+    if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) bit(MouseButton::X2);
+    return mask;
+}
+
 MacroInputEvent make_event(MacroInputEvent::Type type,
                            const MSLLHOOKSTRUCT& info) {
     MacroInputEvent event;
@@ -35,6 +57,13 @@ MacroInputEvent make_event(MacroInputEvent::Type type,
     event.time_us = monotonic_us();
     event.x = info.pt.x;
     event.y = info.pt.y;
+    // Only movement needs the snapshot: a button event names its own button and
+    // the recorder tracks the rest from the stream, so sampling five keys on
+    // every click and wheel notch would be work without a reader.
+    if (type == MacroInputEvent::Type::MouseMove) {
+        event.buttons_down = physical_buttons();
+        event.buttons_known = true;
+    }
     return event;
 }
 

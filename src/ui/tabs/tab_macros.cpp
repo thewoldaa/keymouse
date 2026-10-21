@@ -37,6 +37,7 @@ const char* state_label(I18n& tr, MacroPlayerState state) {
 const char* step_type_label(I18n& tr, MacroStepType type) {
     switch (type) {
         case MacroStepType::Move: return tr.tr("macro.step.move").data();
+        case MacroStepType::MouseDelta: return tr.tr("macro.step.mouse_delta").data();
         case MacroStepType::ButtonDown: return tr.tr("macro.step.button_down").data();
         case MacroStepType::ButtonUp: return tr.tr("macro.step.button_up").data();
         case MacroStepType::Scroll: return tr.tr("macro.step.scroll").data();
@@ -73,6 +74,12 @@ MacroStep default_step(MacroStepType type) {
             }
             break;
         }
+        case MacroStepType::MouseDelta:
+            // A camera nudge is a small relative move; zero would be a step
+            // that plays as nothing at all.
+            step.x = 40;
+            step.y = 0;
+            break;
         case MacroStepType::ButtonDown:
         case MacroStepType::ButtonUp:
             step.data = static_cast<int32_t>(MouseButton::Left);
@@ -181,6 +188,19 @@ void draw_macros_tab(DashboardContext& context) {
                                          engine->macro_recording_steps())
                                    : 0ull,
                             tr.tr("macro.steps").data());
+        if (engine) {
+            // Camera steps and key steps are counted separately because a
+            // recording can look busy and still contain neither: mouse mode or
+            // a game reading raw input shows up here immediately.
+            ImGui::SameLine();
+            ImGui::TextDisabled("| %llu %s | %llu %s",
+                                static_cast<unsigned long long>(
+                                    engine->macro_recording_camera_steps()),
+                                tr.tr("macro.recording.camera").data(),
+                                static_cast<unsigned long long>(
+                                    engine->macro_recording_key_steps()),
+                                tr.tr("macro.recording.keys").data());
+        }
     } else {
         const bool loaded = edit.loaded && !edit.macro.steps.empty();
         ImGui::BeginDisabled(!loaded);
@@ -404,26 +424,53 @@ void draw_macros_tab(DashboardContext& context) {
                         edit.dirty = true;
                     }
 
+                    // Display order is not enum order, so the selection index
+                    // is mapped through this table instead of being cast.
                     ImGui::TableNextColumn();
-                    ImGui::SetNextItemWidth(em(8.0f));
-                    int type = static_cast<int>(step.type);
-                    const char* types[] = {
-                        step_type_label(tr, MacroStepType::Move),
-                        step_type_label(tr, MacroStepType::ButtonDown),
-                        step_type_label(tr, MacroStepType::ButtonUp),
-                        step_type_label(tr, MacroStepType::Scroll),
-                        step_type_label(tr, MacroStepType::ScrollH),
-                        step_type_label(tr, MacroStepType::KeyDown),
-                        step_type_label(tr, MacroStepType::KeyUp),
-                        step_type_label(tr, MacroStepType::Wait),
+                    static constexpr MacroStepType kStepTypes[] = {
+                        MacroStepType::Move,
+                        MacroStepType::MouseDelta,
+                        MacroStepType::ButtonDown,
+                        MacroStepType::ButtonUp,
+                        MacroStepType::Scroll,
+                        MacroStepType::ScrollH,
+                        MacroStepType::KeyDown,
+                        MacroStepType::KeyUp,
+                        MacroStepType::Wait,
                     };
-                    if (ImGui::Combo("##type", &type, types, 8)) {
-                        step.type = static_cast<MacroStepType>(type);
+                    constexpr int kStepTypeCount =
+                        static_cast<int>(std::size(kStepTypes));
+                    const char* types[kStepTypeCount];
+                    int type = 0;
+                    for (int t = 0; t < kStepTypeCount; ++t) {
+                        types[t] = step_type_label(tr, kStepTypes[t]);
+                        if (kStepTypes[t] == step.type) {
+                            type = t;
+                        }
+                    }
+                    ImGui::SetNextItemWidth(em(8.0f));
+                    if (ImGui::Combo("##type", &type, types, kStepTypeCount)) {
+                        step.type = kStepTypes[type];
                         edit.dirty = true;
                     }
 
                     ImGui::TableNextColumn();
                     switch (step.type) {
+                        case MacroStepType::MouseDelta: {
+                            // Relative camera movement: the pair is a delta,
+                            // not a screen position, so there is no "from
+                            // cursor" button here.
+                            ImGui::SetNextItemWidth(em(6.0f));
+                            if (ImGui::InputInt("##dx", &step.x, 1, 10)) {
+                                edit.dirty = true;
+                            }
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(em(6.0f));
+                            if (ImGui::InputInt("##dy", &step.y, 1, 10)) {
+                                edit.dirty = true;
+                            }
+                            break;
+                        }
                         case MacroStepType::Move: {
                             ImGui::SetNextItemWidth(em(6.0f));
                             if (ImGui::InputInt("##x", &step.x, 1, 10)) {
@@ -558,6 +605,17 @@ void draw_macros_tab(DashboardContext& context) {
             if (ImGui::Checkbox(tr.tr("macro.record_keyboard").data(), &keyboard)) {
                 macros.record_keyboard = keyboard;
                 config_changed = true;
+            }            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tr.tr("macro.record_keyboard.hint").data());
+            }
+
+            bool pov_drag = macros.record_pov_drag;
+            if (ImGui::Checkbox(tr.tr("macro.record_pov_drag").data(), &pov_drag)) {
+                macros.record_pov_drag = pov_drag;
+                config_changed = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tr.tr("macro.record_pov_drag.hint").data());
             }
 
             ImGui::SameLine();

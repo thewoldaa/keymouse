@@ -291,6 +291,7 @@ json macro_config_to_json(const MacroConfig& macros) {
         {"entries", entries},
         {"record_keyboard", macros.record_keyboard},
         {"move_tolerance_px", macros.move_tolerance_px},
+        {"record_pov_drag", macros.record_pov_drag},
         {"record_key", chord_to_json(macros.record_key)},
         {"play_key", chord_to_json(macros.play_key)},
         {"stop_key", chord_to_json(macros.stop_key)},
@@ -301,6 +302,9 @@ MacroConfig macro_config_from_json(const json& value) {
     MacroConfig out;
     if (value.contains("record_keyboard") && value["record_keyboard"].is_boolean()) {
         out.record_keyboard = value["record_keyboard"].get<bool>();
+    }
+    if (value.contains("record_pov_drag") && value["record_pov_drag"].is_boolean()) {
+        out.record_pov_drag = value["record_pov_drag"].get<bool>();
     }
     if (value.contains("move_tolerance_px") && value["move_tolerance_px"].is_number()) {
         out.move_tolerance_px = value["move_tolerance_px"].get<double>();

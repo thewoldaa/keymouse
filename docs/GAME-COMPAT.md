@@ -52,8 +52,17 @@ means the dashboard runs elevated, which is a larger trust surface.
 - **Use `pass` swallow mode** if the game also needs the key. Movement keys
   bound with `swallow` will not reach the game.
 - **Record macros at the resolution and window position you intend to replay
-  them in.** Steps store absolute screen coordinates, so a moved window or a
-  different display mode makes the recording land somewhere else.
+  them in.** Absolute steps store screen coordinates, so a moved window or a
+  different display mode makes the recording land somewhere else. Camera-drag
+  steps are relative and survive a resolution change; the absolute steps around
+  them do not.
+- **Hold the aim button while the camera is recorded.** While any mouse button
+  is down, movement is stored as a relative delta and replayed through relative
+  injection, which is the path a first-person game reads to turn the view. A
+  button that was already held when Record was pressed is not pressed again on
+  playback — the macro assumes the recording's button state — so replay it the
+  same way you recorded it. Smooth mouse-look with no button held is ordinary
+  pointer movement and is stored as absolute positions.
 - **Keep the real mouse still during playback.** Moving it pauses the macro so
   you can take over; that is deliberate, but it also means a knock against the
   desk interrupts a long recording.
